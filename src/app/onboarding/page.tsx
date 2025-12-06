@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { supabase } from "../lib/supabaseClient";
 import type { InitialPlanResponse } from "../lib/types";
 import { saveClientProfile } from "../lib/saveClientProfile";
-import type { ClientProfileInput } from "../lib/saveClientProfile";
 import { DailyCalorieNeeds } from "../lib/macros";
 
 // If GoalType is exported from lib/types, import it instead of redefining:
@@ -83,6 +83,17 @@ export default function OnboardingPage() {
       return;
     }
 
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      setLoading(false);
+      setError("You must be logged in to complete onboarding.");
+      return;
+    }
+
     // 1) Build base profile (no macros yet)
     const clientProfileBase = {
       first_name: form.first_name,
@@ -147,7 +158,7 @@ export default function OnboardingPage() {
 
     try {
       // 6) Save profile to Supabase
-      const inserted = await saveClientProfile(clientProfile);
+      const inserted = await saveClientProfile(clientProfile, user.id);
       const profileId = inserted.id; // uuid from DB
 
       // 7) Call your OpenAI API with profile + macros + call answers
