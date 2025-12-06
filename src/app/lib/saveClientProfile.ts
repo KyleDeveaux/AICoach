@@ -19,10 +19,14 @@ export interface ClientProfileInput {
   calorieTarget?: number;
 }
 
-export async function saveClientProfile(profile: ClientProfileInput) {
+export async function saveClientProfile(
+  profile: ClientProfileInput,
+  userId: string
+) {
   const { data, error } = await supabase
     .from("client_profiles")
     .insert({
+      user_id: userId,
       first_name: profile.first_name,
       last_name: profile.last_name,
       age: profile.age,
