@@ -11,7 +11,7 @@ export default function Home() {
         </p>
         <div className="flex gap-4 justify-center mt-4">
           <Link
-            href="/onboarding"
+            href="/login"
             className="px-4 py-2 rounded bg-black text-white"
           >
             Get Started

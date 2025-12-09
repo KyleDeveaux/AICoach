@@ -35,8 +35,10 @@ export default function LoginPage() {
         // After login, send to dashboard (or onboarding if they haven’t filled it yet)
         router.push("/dashboard");
       }
-    } catch (err: any) {
-      setError(err.message || "Something went wrong");
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "Something went wrong";
+      setError(message);
     } finally {
       setLoading(false);
     }
