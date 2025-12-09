@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-import type { InitialPlanResponse } from "../lib/types";
+import type { InitialPlanResponse, WeeklySummaryResponse } from "../lib/types";
 import { saveClientProfile } from "../lib/saveClientProfile";
 import { DailyCalorieNeeds } from "../lib/macros";
 
@@ -14,10 +14,11 @@ type ClientProfileFormState = {
   last_name: string;
   age: string; // keep as string in form, convert to number before sending
   gender: "male" | "female" | "other";
-  height_cm: string;
-  weight_kg: string;
+  height_feet: string;
+  height_inches: string;
+  weight_lbs: string;
   goalType: GoalType;
-  goalWeight_kg: string;
+  goalWeight_lbs: string;
   currentWorkoutsPerWeek: string;
   realisticWorkoutsPerWeek: string;
   workSchedule: string;
@@ -34,10 +35,11 @@ const initialFormState: ClientProfileFormState = {
   last_name: "",
   age: "",
   gender: "male",
-  height_cm: "",
-  weight_kg: "",
+  height_feet: "",
+  height_inches: "",
+  weight_lbs: "",
   goalType: "lose_weight",
-  goalWeight_kg: "",
+  goalWeight_lbs: "",
   currentWorkoutsPerWeek: "",
   realisticWorkoutsPerWeek: "",
   workSchedule: "",
@@ -54,6 +56,7 @@ export default function OnboardingPage() {
   const [plan, setPlan] = useState<InitialPlanResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+
   function updateField<K extends keyof ClientProfileFormState>(
     key: K,
     value: ClientProfileFormState[K]
@@ -67,14 +70,31 @@ export default function OnboardingPage() {
     setError(null);
     setPlan(null);
 
+    const heightFeet = Number(form.height_feet);
+    const heightInches = Number(form.height_inches || "0");
+    const weightLbs = Number(form.weight_lbs);
+    const goalWeightLbs = Number(form.goalWeight_lbs);
+
+    const height_cm = heightFeet * 30.48 + heightInches * 2.54;
+    const weight_kg = weightLbs / 2.20462;
+    const goalWeight_kg = goalWeightLbs / 2.20462;
+
+    // lbs → kg
+    const kgFromLbs = (lbs: number) => lbs / 2.20462;
+
+    // ft + in → cm
+    const cmFromFeetInches = (feet: number, inches: number) =>
+      feet * 30.48 + inches * 2.54;
+
     // Very basic required-field check
     if (
       !form.first_name ||
       !form.last_name ||
       !form.age ||
-      !form.height_cm ||
-      !form.weight_kg ||
-      !form.goalWeight_kg ||
+      !form.height_feet ||
+      !form.height_inches ||
+      !form.weight_lbs ||
+      !form.goalWeight_lbs ||
       !form.currentWorkoutsPerWeek ||
       !form.realisticWorkoutsPerWeek
     ) {
@@ -82,6 +102,12 @@ export default function OnboardingPage() {
       setError("Please fill in all required fields.");
       return;
     }
+    console.log(
+      "Submitting form with height_cm:",
+      height_cm,
+      "weight_kg:",
+      weight_kg
+    );
 
     const {
       data: { user },
@@ -100,10 +126,10 @@ export default function OnboardingPage() {
       last_name: form.last_name,
       age: Number(form.age),
       gender: form.gender,
-      height_cm: Number(form.height_cm),
-      weight_kg: Number(form.weight_kg),
+      height_cm: Math.round(height_cm),
+      weight_kg: Number(weight_kg.toFixed(1)),
       goalType: form.goalType,
-      goalWeight_kg: Number(form.goalWeight_kg),
+      goalWeight_kg: Number(goalWeight_kg.toFixed(1)),
       currentWorkoutsPerWeek: Number(form.currentWorkoutsPerWeek),
       realisticWorkoutsPerWeek: Number(form.realisticWorkoutsPerWeek),
       workSchedule: form.workSchedule,
@@ -180,9 +206,10 @@ export default function OnboardingPage() {
 
       const data = (await res.json()) as InitialPlanResponse;
       setPlan(data);
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || "Something went wrong");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong";
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -254,36 +281,50 @@ export default function OnboardingPage() {
         {/* Height, Weight, Goal Weight */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
-            <label className="block text-sm font-medium mb-1">
-              Height (cm) *
-            </label>
-            <input
-              type="number"
-              className="w-full border rounded px-3 py-2 text-sm"
-              value={form.height_cm}
-              onChange={(e) => updateField("height_cm", e.target.value)}
-            />
+            <label className="block text-sm font-medium mb-1">Height *</label>
+            <div className="flex gap-2">
+              <input
+                type="number"
+                min={3}
+                max={7}
+                className="w-full border rounded px-3 py-2 text-sm"
+                placeholder="ft"
+                value={form.height_feet}
+                onChange={(e) => updateField("height_feet", e.target.value)}
+              />
+              <input
+                type="number"
+                min={0}
+                max={11}
+                className="w-full border rounded px-3 py-2 text-sm"
+                placeholder="in"
+                value={form.height_inches}
+                onChange={(e) => updateField("height_inches", e.target.value)}
+              />
+            </div>
           </div>
+
           <div>
             <label className="block text-sm font-medium mb-1">
-              Current Weight (kg) *
+              Current Weight (lbs) *
             </label>
             <input
               type="number"
               className="w-full border rounded px-3 py-2 text-sm"
-              value={form.weight_kg}
-              onChange={(e) => updateField("weight_kg", e.target.value)}
+              value={form.weight_lbs}
+              onChange={(e) => updateField("weight_lbs", e.target.value)}
             />
           </div>
+
           <div>
             <label className="block text-sm font-medium mb-1">
-              Goal Weight (kg) *
+              Goal Weight (lbs) *
             </label>
             <input
               type="number"
               className="w-full border rounded px-3 py-2 text-sm"
-              value={form.goalWeight_kg}
-              onChange={(e) => updateField("goalWeight_kg", e.target.value)}
+              value={form.goalWeight_lbs}
+              onChange={(e) => updateField("goalWeight_lbs", e.target.value)}
             />
           </div>
         </div>
