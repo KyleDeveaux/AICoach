@@ -56,7 +56,6 @@ export default function OnboardingPage() {
   const [plan, setPlan] = useState<InitialPlanResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-
   function updateField<K extends keyof ClientProfileFormState>(
     key: K,
     value: ClientProfileFormState[K]
@@ -79,13 +78,6 @@ export default function OnboardingPage() {
     const weight_kg = weightLbs / 2.20462;
     const goalWeight_kg = goalWeightLbs / 2.20462;
 
-    // lbs → kg
-    const kgFromLbs = (lbs: number) => lbs / 2.20462;
-
-    // ft + in → cm
-    const cmFromFeetInches = (feet: number, inches: number) =>
-      feet * 30.48 + inches * 2.54;
-
     // Very basic required-field check
     if (
       !form.first_name ||
@@ -102,12 +94,6 @@ export default function OnboardingPage() {
       setError("Please fill in all required fields.");
       return;
     }
-    console.log(
-      "Submitting form with height_cm:",
-      height_cm,
-      "weight_kg:",
-      weight_kg
-    );
 
     const {
       data: { user },
@@ -167,24 +153,23 @@ export default function OnboardingPage() {
     };
 
     // 4) Final clientProfile including calorieTarget (for DB + API)
-    const clientProfile = {
+    const clientProfileForDb = {
       ...clientProfileBase,
-      calorieTarget: macroTargets.calorieTarget,
+      calorie_target: macroTargets.calorieTarget,
     };
 
     // 5) Temporary hard-coded callAnswers (you'll collect these later)
     const callAnswers = {
-      why: "I want to improve my health and feel more confident.",
-      futureVision:
-        "In 6 months I want to feel leaner, stronger, and more energetic.",
-      pastStruggles: "I struggle with consistency when life gets busy.",
+      why: "I dont wanna be fat no more and be a fat husband to my wife.",
+      futureVision: "in shape more active, more mobile in the hip region.",
+      pastStruggles: "My manual labor job makes it hard to stay consistent.",
       planRealismRating: 8,
-      notes: "Prefers simple meals and hates complicated recipes.",
+      notes: "I dont like to over exert myself. I feel bad when I push too hard.",
     };
 
     try {
       // 6) Save profile to Supabase
-      const inserted = await saveClientProfile(clientProfile, user.id);
+      const inserted = await saveClientProfile(clientProfileForDb, user.id);
       const profileId = inserted.id; // uuid from DB
 
       // 7) Call your OpenAI API with profile + macros + call answers
@@ -192,7 +177,7 @@ export default function OnboardingPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          clientProfile,
+          clientProfile: clientProfileForDb,
           callAnswers,
           macroTargets,
           profileId,
@@ -273,7 +258,6 @@ export default function OnboardingPage() {
             >
               <option value="male">Male</option>
               <option value="female">Female</option>
-              <option value="other">Other / Prefer not to say</option>
             </select>
           </div>
         </div>
@@ -401,37 +385,6 @@ export default function OnboardingPage() {
             />
           </div>
         </div>
-        {/* Consent to call */}
-        {/* <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">
-              Phone Number*
-            </label>
-            <input
-              type="string"
-              //   min={0}
-              //   max={7}
-              className="w-full border rounded px-3 py-2 text-sm"
-              value={form.phoneNumber}
-              onChange={(e) => updateField("phoneNumber", e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">
-              Does the coach have permission to call? *
-            </label>
-            <select
-              className="w-full border rounded px-3 py-2 text-sm"
-              value={form.consentToCall ? "true" : "false"}
-              onChange={(e) =>
-                updateField("consentToCall", e.target.value === "true")
-              }
-            >
-              <option value="true">Yes</option>
-              <option value="false">No</option>
-            </select>
-          </div>
-        </div> */}
 
         {/* Work schedule, preferred workout time */}
         <div className="space-y-2">
@@ -522,3 +475,4 @@ export default function OnboardingPage() {
     </main>
   );
 }
+

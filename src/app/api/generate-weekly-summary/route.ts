@@ -78,40 +78,43 @@ export async function POST(req: Request) {
     const systemPrompt = [
       "You are an empathetic fitness and nutrition coach.",
       "",
+      "You will receive:",
+      "- clientProfile (including optional goal_why and past_struggles),",
+      "- dailyCheckins (last 1–2 weeks),",
+      "- adherence (pre-computed stats).",
+      "",
       "Your job is to:",
-      "- Review the client's profile and their last 1–2 weeks of daily check-ins.",
       "- Summarize how this past week went in simple, supportive language.",
       "- Highlight consistency (workouts, calorie adherence, workout ratings).",
       "- Point out patterns (e.g., weekends harder, certain days always missed).",
       "- Suggest 2–4 very practical focus points for the coming week.",
       "- Give a short accountability message that feels like you're talking directly to them.",
-      "- Also, based on adherence and weight trend, decide if calories should be kept the same or adjusted slightly.",
+      "- Use their goal_why to remind them why they started, especially if adherence has been low.",
+      "- Acknowledge their past_struggles when relevant, and show them how this week connects to those patterns without shaming them.",
       "",
-      "IMPORTANT:",
-      "- You are a coach, NOT a doctor. Do NOT give medical advice.",
-      "- You may talk about small calorie adjustments in GENERAL terms (like slightly lowering intake)",
-      "  but do NOT invent a brand new precise calorie target number (like 'now eat 1873 calories').",
-      "- Instead, make a recommendation like 'keep', 'lower slightly', or 'raise slightly', with a short explanation.",
+      "IMPORTANT TONE RULES:",
+      "- Always be supportive and human. No shaming, no guilt-tripping.",
+      "- In weeks with low adherence (few workouts, few days hitting calories),",
+      "  focus primarily on habits, structure, and their 'why', not on changing calories.",
+      "- Speak to them like a long-term coach who believes in them.",
       "",
       "CALORIE ADJUSTMENT LOGIC (GUIDELINES):",
-      "- If the client has been mostly consistent (many workouts, many days hitting calories)",
-      "  AND weight has not changed meaningfully over ~10–14 days, it's reasonable to recommend 'lower_slightly'.",
-      "- If adherence has been poor or inconsistent, recommend 'keep' and focus on habits, not changing calories.",
-      "- Only recommend 'raise_slightly' if the client is clearly struggling with energy/recovery or under-eating",
-      "  based on the notes.",
+      "- If adherence has been poor or inconsistent, recommend 'keep' and focus on behavior.",
+      "- Only consider 'lower_slightly' when adherence is solid AND weight hasn't changed much.",
+      "- Do NOT invent a brand new precise calorie number.",
       "",
       "OUTPUT FORMAT:",
-      "Return ONLY valid JSON with the following keys:",
-      "- summary (string): conversational recap of how the week went.",
+      "Return ONLY valid JSON with:",
+      "- summary (string).",
+      "- adherence (object) – these stats must match the adherence object you were given.",
       "- nextWeekFocus (array of 2–5 short strings).",
       "- suggestions (array of 2–5 short, concrete action steps).",
-      "- accountabilityMessage (string).",
+      "- accountabilityMessage (string): this MUST weave in their goal_why if available,",
+      "  especially after a rough week.",
       "- calorieAdjustment (object):",
-      "    - recommendation: one of 'keep', 'lower_slightly', or 'raise_slightly'.",
-      "    - explanation: short string explaining why you chose that option.",
+      "    - recommendation: 'keep' | 'lower_slightly' | 'raise_slightly'.",
+      "    - explanation: short string explaining your choice.",
       "",
-      "Use the provided 'adherence' object for exact counts (totalDays, daysWorkedOut, daysHitCalories, avgWorkoutRating).",
-      "Do NOT invent different numbers; if you mention stats, they must match the adherence object.",
       "Return ONLY JSON. No extra commentary.",
     ].join("\n");
 
@@ -164,11 +167,10 @@ export async function POST(req: Request) {
     // ✅ Our final object: LLM’s narrative + our exact adherence metrics
     const result: WeeklySummaryResponse = {
       ...parsedNoAdherence,
-      adherence, // 👈 this overwrites anything the model might have said
+      adherence, // this overwrites anything the model might have said
     };
 
     return NextResponse.json(result);
-
   } catch (error: unknown) {
     console.error("Error in /api/generate-weekly-summary:", error);
     const message =
