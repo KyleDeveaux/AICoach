@@ -134,6 +134,8 @@ export async function POST(req: Request) {
         .update({
           workout_split: parsed.workoutSplit,
           weekly_workout_schedule: parsed.weeklyWorkoutSchedule,
+          goal_why: parsed.goalWhy,
+          past_struggles: parsed.pastStruggles,
         })
         .eq("id", profileId);
 

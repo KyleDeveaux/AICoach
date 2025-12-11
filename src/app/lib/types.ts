@@ -43,6 +43,7 @@ export interface InitialPlanResponse {
 }
 
 export interface ClientProfile {
+  id: string;
   first_name: string;
   last_name: string;
   age: string; // keep as string in form, convert to number before sending
@@ -51,12 +52,18 @@ export interface ClientProfile {
   weight_kg: string;
   goalType: GoalType;
   goalWeight_kg: string;
+  calorie_target: number | null; // 👈 NEW: matches DB column
   currentWorkoutsPerWeek: string;
-  realisticWorkoutsPerWeek: string;
+  realistic_workouts_per_week: string;
   workSchedule: string;
   preferredWorkoutTime: string;
   equipment: "none" | "home_gym" | "commercial_gym";
   estimatedSteps: string; // e.g. "9k-10k"
+  goal_why?: string | null;
+  past_struggles?: string | null;
+  workout_split?: string[] | null;
+  weekly_workout_schedule?: WeeklyWorkoutSession[] | null;
+  // contact info (future use)
   //   phoneNumber?: string;
   //   email?: string;
   //   consentToCall?: boolean;
@@ -111,7 +118,7 @@ export interface DailyCheckinInsert {
 export type DailyCheckinRow = {
   id: string;
   profile_id: string;
-  checkin_date: string;     // ISO date "YYYY-MM-DD"
+  checkin_date: string; // ISO date "YYYY-MM-DD"
   did_workout: boolean;
   hit_calorie_goal: boolean;
   weight_kg: number | null;
@@ -122,7 +129,7 @@ export type DailyCheckinRow = {
 };
 
 export interface WeeklySummaryResponse {
-  summary: string // main conversational summary for the client
+  summary: string; // main conversational summary for the client
 
   adherence: {
     totalDays: number;
@@ -130,13 +137,21 @@ export interface WeeklySummaryResponse {
     daysHitCalories: number;
     avgWorkoutRating: number | null;
   };
+
   nextWeekFocus: string[]; // advice for next week
-  suggestions: string[]; 
+  suggestions: string[];
 
   accountabilityMessage: string[]; // when user struggles reminding messages
 
   calorieAdjustment: {
     recommendation: "keep" | "lower_slightly" | "raise_slightly";
     explanation: string;
-  }
+  };
 }
+
+export interface WeekStats {
+  totalCheckins: number;
+  daysWorkedOut: number;
+  daysHitCalories: number;
+  avgWorkoutRating: number | null;
+};

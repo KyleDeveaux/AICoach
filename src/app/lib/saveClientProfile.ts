@@ -17,6 +17,7 @@ export interface ClientProfileInput {
   equipment: "none" | "home_gym" | "commercial_gym";
   estimatedSteps: string;
   calorieTarget?: number;
+  calorie_target: number;
 }
 
 export async function saveClientProfile(
@@ -33,6 +34,7 @@ export async function saveClientProfile(
       gender: profile.gender,
       height_cm: profile.height_cm,
       weight_kg: profile.weight_kg,
+      calorie_target: profile.calorie_target,
       goal_type: profile.goalType,
       goal_weight_kg: profile.goalWeight_kg,
       current_workouts_per_week: profile.currentWorkoutsPerWeek,
@@ -41,7 +43,6 @@ export async function saveClientProfile(
       preferred_workout_time: profile.preferredWorkoutTime,
       equipment: profile.equipment,
       estimated_steps: profile.estimatedSteps,
-      calorie_target: profile.calorieTarget,
     })
     .select("id") // return the new record's id
     .single();
