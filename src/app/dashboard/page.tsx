@@ -1,25 +1,68 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation"; // ⬅️ NEW
+
 import type {
   ClientProfile,
   WeeklySummaryResponse,
   DailyCheckinRow,
   DailyCheckinInsert,
   WeekStats,
+  FoodEntryRow,
+  FoodEntryInsert,
 } from "../lib/types";
 import { saveDailyCheckin } from "../lib/saveDailyCheckin";
 import { supabase } from "../lib/supabaseClient";
 import { getCurrentWeekRange } from "../lib/utils";
 
+// 🔹 Weekday helper for the calendar
+const WEEKDAY_NAMES = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+  "Sunday",
+];
+
+function getCurrentWeekDays() {
+  const today = new Date();
+  const dayIndex = today.getDay(); // 0 = Sunday, 6 = Saturday
+  const mondayOffset = (dayIndex + 6) % 7; // convert to Monday-based
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - mondayOffset);
+
+  return WEEKDAY_NAMES.map((dayName, index) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + index);
+    return {
+      dayName,
+      dateLabel: d.getDate().toString(), // e.g. "11"
+      isToday: d.toDateString() === today.toDateString(),
+    };
+  });
+}
+
+// 🔹 Helper: today's local date in YYYY-MM-DD
+function getTodayLocalDate(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export default function DashboardPage() {
+  const router = useRouter();
+
   const [profile, setProfile] = useState<ClientProfile | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false); // ⬅️ NEW
+
   const [weeklySummary, setWeeklySummary] =
     useState<WeeklySummaryResponse | null>(null);
-  const [todayWorkout, setTodayWorkout] = useState<any | null>(null);
-  const [todayCheckin, setTodayCheckin] = useState<DailyCheckinRow | null>(
-    null
-  );
+
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
 
   const [isCheckinOpen, setIsCheckinOpen] = useState(false);
@@ -38,6 +81,22 @@ export default function DashboardPage() {
     daysHitCalories: 0,
     avgWorkoutRating: null,
   });
+
+  // 🔹 FOOD LOGGING STATE
+  const [todayMeals, setTodayMeals] = useState<FoodEntryRow[]>([]);
+  const [newMealDescription, setNewMealDescription] = useState("");
+  const [newMealCalories, setNewMealCalories] = useState("");
+  const [newMealType, setNewMealType] = useState("Meal");
+  const [mealError, setMealError] = useState<string | null>(null);
+  const [mealSaving, setMealSaving] = useState(false);
+  const [mealDeletingId, setMealDeletingId] = useState<string | null>(null);
+
+  // 🔹 WORKOUT CALENDAR: selected day of the week
+  const [selectedDayName, setSelectedDayName] = useState<string>(() =>
+    new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(new Date())
+  );
+
+  const todayIso = getTodayLocalDate();
 
   // 🔹 Reusable: load this week's stats for a given profile
   async function loadWeekStats(profileId: string) {
@@ -87,13 +146,7 @@ export default function DashboardPage() {
     });
   }
 
-  const getTodayName = () => {
-    return new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(
-      new Date()
-    ); // e.g. "Monday"
-  };
-
-  // 🔹 Load profile on mount, then load week stats for that profile
+  // 🔹 Load profile on mount, then load week stats + today's meals
   useEffect(() => {
     async function loadProfile() {
       const {
@@ -124,24 +177,111 @@ export default function DashboardPage() {
       const clientProfile = data as ClientProfile;
       setProfile(clientProfile);
 
-      // 🔹 Set week stats
+      // 🔹 Week stats
       await loadWeekStats(clientProfile.id);
 
-      // 🔹 Set today's workout based on weekly_workout_schedule
-      const todayName = getTodayName();
+      // 🔹 Today's meals
+      const { data: mealsData, error: mealsError } = await supabase
+        .from("food_entries")
+        .select("*")
+        .eq("profile_id", clientProfile.id)
+        .eq("entry_date", todayIso)
+        .order("created_at", { ascending: true });
 
-      if (clientProfile.weekly_workout_schedule) {
-        const todays = clientProfile.weekly_workout_schedule.find(
-          (w) => w.dayOfWeek === todayName
-        );
-        setTodayWorkout(todays ?? null);
-      } else {
-        setTodayWorkout(null);
+      if (mealsError) {
+        console.error("Error loading food entries:", mealsError);
+      } else if (mealsData) {
+        setTodayMeals(mealsData as FoodEntryRow[]);
       }
     }
 
     loadProfile();
-  }, []);
+    // todayIso in dependency so that if the user leaves tab open overnight, it reloads next day
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayIso]);
+
+  // 🔹 FOOD LOGGING HANDLERS
+
+  const caloriesLogged = todayMeals.reduce(
+    (sum, meal) => sum + (meal.calories ?? 0),
+    0
+  );
+
+  async function handleAddMeal() {
+    if (!profile?.id) {
+      setMealError("Profile not loaded yet.");
+      return;
+    }
+    setMealError(null);
+
+    const caloriesNum = Number(newMealCalories);
+    if (!newMealDescription || !caloriesNum || caloriesNum <= 0) {
+      setMealError("Please enter a description and a valid calorie amount.");
+      return;
+    }
+
+    const payload: FoodEntryInsert = {
+      profile_id: profile.id,
+      entry_date: todayIso,
+      description: newMealDescription.trim(),
+      calories: caloriesNum,
+      meal_type: newMealType || null,
+    };
+
+    setMealSaving(true);
+    try {
+      const { data, error } = await supabase
+        .from("food_entries")
+        .insert(payload)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setTodayMeals((prev) => [...prev, data as FoodEntryRow]);
+      setNewMealDescription("");
+      setNewMealCalories("");
+      setNewMealType("Meal");
+    } catch (err: unknown) {
+      console.error(err);
+      const message =
+        err instanceof Error ? err.message : "Failed to save meal.";
+      setMealError(message);
+    } finally {
+      setMealSaving(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await supabase.auth.signOut();
+      router.push("/login");
+    } catch (err) {
+      console.error("Error logging out:", err);
+    }
+  }
+
+  async function handleDeleteMeal(id: string) {
+    if (!profile?.id) return;
+    setMealDeletingId(id);
+    try {
+      const { error } = await supabase
+        .from("food_entries")
+        .delete()
+        .eq("id", id)
+        .eq("profile_id", profile.id);
+
+      if (error) throw error;
+
+      setTodayMeals((prev) => prev.filter((m) => m.id !== id));
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setMealDeletingId(null);
+    }
+  }
+
+  // 🔹 DAILY CHECK-IN HANDLER
 
   async function handleSaveTodayCheckin() {
     if (!profile?.id) {
@@ -157,12 +297,7 @@ export default function DashboardPage() {
     setCheckinLoading(true);
     setCheckinMessage(null);
 
-    // Local date so we don't get off-by-one issues
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-    const day = String(now.getDate()).padStart(2, "0");
-    const today = `${year}-${month}-${day}`;
+    const today = todayIso;
 
     const payload: DailyCheckinInsert = {
       profile_id: profile.id,
@@ -229,13 +364,24 @@ export default function DashboardPage() {
   });
 
   const calorieTarget = profile?.calorie_target ?? 0;
-  const caloriesLogged = 1450; // TODO: plug in food logging later
   const caloriesRemaining = calorieTarget - caloriesLogged;
 
   const plannedWorkouts = profile?.realistic_workouts_per_week ?? 0;
   const workoutsThisWeek = weekStats.daysWorkedOut;
   const daysHitCalories = weekStats.daysHitCalories;
-  const totalDaysLogged = weekStats.totalCheckins;
+  const totalDaysLogged = weekStats.totalCheckins; // currently not shown, but available
+
+  // 🔹 Workout calendar derived data
+  const weekDaysInfo = getCurrentWeekDays();
+  const workoutDaysSet = new Set(
+    (profile?.weekly_workout_schedule ?? []).map(
+      (w: any) => w.dayOfWeek as string
+    )
+  );
+  const selectedWorkout =
+    profile?.weekly_workout_schedule?.find(
+      (w: any) => w.dayOfWeek === selectedDayName
+    ) ?? null;
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
@@ -247,8 +393,10 @@ export default function DashboardPage() {
               <span className="text-sm font-bold">AI</span>
             </div>
             <div className="flex flex-col leading-tight">
-              <a className="text-base font-semibold tracking-tight md:text-lg"
-                href="/">
+              <a
+                className="text-base font-semibold tracking-tight md:text-lg"
+                href="/"
+              >
                 Coach<span className="text-blue-600">IE</span>
               </a>
               <span className="text-xs text-slate-500">
@@ -258,13 +406,84 @@ export default function DashboardPage() {
           </div>
 
           {profile && (
-            <div className="flex items-center gap-2 text-sm text-slate-600">
+            <div className="relative flex items-center gap-2 text-sm text-slate-600">
               <span className="hidden text-xs uppercase tracking-wide text-slate-400 md:inline">
                 Logged in as
               </span>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-800">
                 {profile.first_name} {profile.last_name}
               </span>
+
+              {/* Settings button */}
+              <button
+                type="button"
+                onClick={() => setIsSettingsOpen((prev) => !prev)}
+                className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                aria-label="Open settings"
+              >
+                {/* Simple gear icon (inline SVG) */}
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.8}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M19.4 15a1.78 1.78 0 0 0 .37 1.95l.06.06a1.5 1.5 0 0 1-2.12 2.12l-.06-.06A1.78 1.78 0 0 0 15 19.4a1.78 1.78 0 0 0-1 .6 1.78 1.78 0 0 0-.37 1.95l.03.07a1.5 1.5 0 1 1-2.8 0l.03-.07A1.78 1.78 0 0 0 9 19.4a1.78 1.78 0 0 0-1.95.37l-.06.06a1.5 1.5 0 1 1-2.12-2.12l.06-.06A1.78 1.78 0 0 0 4.6 15a1.78 1.78 0 0 0-1.95-1l-.07.03a1.5 1.5 0 0 1 0-2.8l.07.03A1.78 1.78 0 0 0 4.6 9a1.78 1.78 0 0 0-.6-1 1.78 1.78 0 0 0-1.95-.37l-.07.03a1.5 1.5 0 1 1 2.8 0l-.03.07A1.78 1.78 0 0 0 9 4.6a1.78 1.78 0 0 0 1-.6 1.78 1.78 0 0 0 .37-1.95l-.03-.07a1.5 1.5 0 1 1 2.8 0l-.03.07A1.78 1.78 0 0 0 15 4.6a1.78 1.78 0 0 0 1.95-.37l.06-.06a1.5 1.5 0 1 1 2.12 2.12l-.06.06A1.78 1.78 0 0 0 19.4 9c.35.94.35 2.06 0 3z" />
+                </svg>
+              </button>
+
+              {/* Settings dropdown */}
+              {isSettingsOpen && (
+                <div className="absolute right-0 top-10 w-52 rounded-xl border border-slate-200 bg-white shadow-lg shadow-slate-200/80">
+                  <div className="border-b border-slate-100 px-3 py-2">
+                    <p className="text-xs font-semibold text-slate-700">
+                      Account menu
+                    </p>
+                    <p className="text-[11px] text-slate-400">
+                      Manage your CoachIE account
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSettingsOpen(false);
+                      router.push("/settings");
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                    <span>Account settings</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSettingsOpen(false);
+                      router.push("/billing");
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    <span>Billing & payments</span>
+                  </button>
+
+                  <div className="border-t border-slate-100" />
+
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-rose-600 hover:bg-rose-50"
+                  >
+                    <span>Log out</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -274,7 +493,7 @@ export default function DashboardPage() {
       <div className="mx-auto grid max-w-6xl gap-6 px-4 py-6 md:grid-cols-[minmax(0,2fr)_minmax(0,1.2fr)] md:py-8">
         {/* LEFT: Today */}
         <section className="space-y-6">
-          {/* Today Overview */}
+          {/* Today Overview + Calories + Meals */}
           <div className="rounded-2xl bg-white p-5 shadow-sm shadow-slate-200 md:p-6">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <div>
@@ -389,41 +608,160 @@ export default function DashboardPage() {
                 </div>
               </div>
             </div>
+
+            {/* Meals */}
+            <div className="mt-4 space-y-3 text-sm">
+              {/* Add meal form */}
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <select
+                  value={newMealType}
+                  onChange={(e) => setNewMealType(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-xs text-slate-800 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500 sm:w-32"
+                >
+                  <option value="Meal">Meal</option>
+                  <option value="Breakfast">Breakfast</option>
+                  <option value="Lunch">Lunch</option>
+                  <option value="Dinner">Dinner</option>
+                  <option value="Snack">Snack</option>
+                </select>
+
+                <input
+                  type="text"
+                  placeholder="e.g. Chicken bowl with rice"
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+                  value={newMealDescription}
+                  onChange={(e) => setNewMealDescription(e.target.value)}
+                />
+
+                <input
+                  type="number"
+                  placeholder="cals"
+                  className="w-24 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+                  value={newMealCalories}
+                  onChange={(e) => setNewMealCalories(e.target.value)}
+                />
+
+                <button
+                  type="button"
+                  onClick={handleAddMeal}
+                  disabled={mealSaving}
+                  className="rounded-full bg-blue-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-300"
+                >
+                  {mealSaving ? "Adding..." : "Add"}
+                </button>
+              </div>
+
+              {mealError && (
+                <p className="text-xs text-rose-500">{mealError}</p>
+              )}
+
+              {/* Meals list */}
+              {todayMeals.length > 0 ? (
+                <ul className="mt-3 space-y-2 text-xs">
+                  {todayMeals.map((meal) => (
+                    <li
+                      key={meal.id}
+                      className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+                    >
+                      <div>
+                        <p className="font-medium text-slate-800">
+                          {meal.description}
+                        </p>
+                        <p className="text-[11px] text-slate-500">
+                          {meal.meal_type || "Meal"} • {meal.calories} kcal
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteMeal(meal.id)}
+                        disabled={mealDeletingId === meal.id}
+                        className="text-[11px] font-medium text-slate-400 hover:text-rose-600 disabled:cursor-not-allowed"
+                      >
+                        {mealDeletingId === meal.id ? "Deleting..." : "Delete"}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-3 text-xs text-slate-500">
+                  No meals logged yet. Start by adding what you eat today – even
+                  if it&apos;s not perfect.
+                </p>
+              )}
+            </div>
           </div>
 
-          {/* Today’s workout */}
+          {/* Weekly workout plan with calendar-style selector */}
           <div className="rounded-2xl bg-white p-5 shadow-sm shadow-slate-200 md:p-6">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-base font-semibold md:text-lg">
-                Today&apos;s Workout
+                Weekly workout plan
               </h2>
               <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
-                {todayWorkout ? todayWorkout.workoutName : "Rest / steps day"}
+                {selectedDayName}
               </span>
             </div>
 
-            {todayWorkout ? (
-              <ul className="mt-4 space-y-2 text-sm">
-                {todayWorkout.exercises.map((ex: any) => (
-                  <li
-                    key={ex.name}
-                    className="flex items-baseline justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
-                  >
-                    <span className="font-medium text-slate-800">
-                      {ex.name}
-                    </span>
-                    <span className="text-xs text-slate-500">
-                      {ex.sets} × {ex.reps}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="mt-3 text-sm text-slate-600">
-                No lifting planned today. Focus on getting your steps in and
-                staying close to your calorie target.
-              </p>
-            )}
+            {/* Calendar row */}
+            <div className="mt-4 rounded-xl bg-slate-50 p-2">
+              <div className="flex justify-between gap-1">
+                {weekDaysInfo.map((day) => {
+                  const isSelected = day.dayName === selectedDayName;
+                  const hasWorkout = workoutDaysSet.has(day.dayName);
+
+                  return (
+                    <button
+                      key={day.dayName}
+                      type="button"
+                      onClick={() => setSelectedDayName(day.dayName)}
+                      className={[
+                        "flex flex-1 flex-col items-center justify-center rounded-lg px-1 py-1.5 text-[11px] md:px-2 md:py-2 transition",
+                        isSelected
+                          ? "bg-blue-600 text-white shadow-sm"
+                          : day.isToday
+                          ? "bg-blue-50 text-blue-700"
+                          : "text-slate-600 hover:bg-slate-100",
+                      ].join(" ")}
+                    >
+                      <span className="uppercase tracking-wide">
+                        {day.dayName.slice(0, 3)}
+                      </span>
+                      <span className="text-xs">{day.dateLabel}</span>
+                      {hasWorkout && (
+                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Selected day workout */}
+            <div className="mt-4">
+              {selectedWorkout ? (
+                <ul className="space-y-2 text-sm">
+                  {selectedWorkout.exercises.map((ex: any) => (
+                    <li
+                      key={ex.name}
+                      className="flex items-baseline justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+                    >
+                      <span className="font-medium text-slate-800">
+                        {ex.name}
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        {ex.sets} × {ex.reps}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-slate-600">
+                  No lifting planned for {selectedDayName}. This can be a rest /
+                  steps day or a chance to make up a missed session.
+                </p>
+              )}
+            </div>
+            
           </div>
 
           {/* Daily check-in trigger */}

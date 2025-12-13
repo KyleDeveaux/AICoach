@@ -155,3 +155,22 @@ export interface WeekStats {
   daysHitCalories: number;
   avgWorkoutRating: number | null;
 };
+
+export type FoodEntryRow = {
+  id: string;
+  profile_id: string;
+  entry_date: string; // ISO date "YYYY-MM-DD"
+  meal_type: string | null;
+  description: string;
+  calories: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FoodEntryInsert = {
+  profile_id: string;
+  entry_date: string;
+  meal_type?: string | null;
+  description: string;
+  calories: number;
+};
