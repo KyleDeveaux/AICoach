@@ -1,5 +1,9 @@
 // lib/types.ts
 
+// ──────────────────────────
+// Goals & macros
+// ──────────────────────────
+
 export type GoalType = "lose_weight" | "gain_muscle" | "recomp";
 
 export interface MacroTargets {
@@ -9,24 +13,35 @@ export interface MacroTargets {
   // fatTarget_g: number;
 }
 
+// ──────────────────────────
+// Workouts
+// ──────────────────────────
+
+// Single source of truth for exercises
 export interface WorkoutExercise {
   name: string;
   sets: number;
-  reps: string;
+  reps: string; // string so you can use "8–10", "AMRAP", etc.
   rest_seconds: number | string; // allow e.g. "30-45 sec hold"
   notes?: string;
 
-  // NEW: hint for GIF / visual
-  gifUrl?: string; // if you want AI to give a URL (see caveats below)
-  gifSearchTerm?: string; // safer: AI gives a search term like "barbell bench press"
+  // Optional hints for GIF / visual
+  gifUrl?: string;
+  gifSearchTerm?: string;
 }
 
+// Stored per-day workout in the profile
 export interface WeeklyWorkoutSession {
   dayOfWeek: string; // "Monday"
   workoutName: string; // "Upper Body A"
   exercises: WorkoutExercise[];
 }
 
+// Convenient aliases so UI components can use more generic names
+export type Exercise = WorkoutExercise;
+export type WorkoutDay = WeeklyWorkoutSession;
+
+// Initial AI-generated plan
 export interface InitialPlanResponse {
   planSummary: string;
   calorieTarget: number;
@@ -42,6 +57,10 @@ export interface InitialPlanResponse {
   toneNotes: string;
 }
 
+// ──────────────────────────
+// Client profile
+// ──────────────────────────
+
 export interface ClientProfile {
   id: string;
   first_name: string;
@@ -52,7 +71,7 @@ export interface ClientProfile {
   weight_kg: string;
   goalType: GoalType;
   goalWeight_kg: string;
-  calorie_target: number | null; // 👈 NEW: matches DB column
+  calorie_target: number | null; // matches DB column
   currentWorkoutsPerWeek: string;
   realistic_workouts_per_week: string;
   workSchedule: string;
@@ -63,11 +82,13 @@ export interface ClientProfile {
   past_struggles?: string | null;
   workout_split?: string[] | null;
   weekly_workout_schedule?: WeeklyWorkoutSession[] | null;
-  // contact info (future use)
-  //   phoneNumber?: string;
-  //   email?: string;
-  //   consentToCall?: boolean;
+  phone_number?: string | null;
+  allow_sms_checkins?: boolean | null;
 }
+
+// ──────────────────────────
+// Call answers (onboarding)
+// ──────────────────────────
 
 export interface CallAnswers {
   why: string;
@@ -77,32 +98,9 @@ export interface CallAnswers {
   notes?: string;
 }
 
-export interface WorkoutExercise {
-  name: string;
-  sets: number;
-  reps: string;
-  rest_seconds: number | string; // allow e.g. "30-45 sec hold"
-  notes?: string;
-}
-
-export interface WeeklyWorkoutSession {
-  dayOfWeek: string; // "Monday"
-  workoutName: string; // "Upper Body A"
-  exercises: WorkoutExercise[];
-}
-
-export interface InitialPlanResponse {
-  planSummary: string;
-  calorieTarget: number;
-  proteinTarget_g: number;
-  workoutsPerWeek: number;
-  workoutSplit: string[];
-  weeklyWorkoutSchedule: WeeklyWorkoutSession[];
-  stepTarget: number;
-  goalWhy: string;
-  pastStruggles: string;
-  toneNotes: string;
-}
+// ──────────────────────────
+// Daily check-ins
+// ──────────────────────────
 
 export interface DailyCheckinInsert {
   profile_id: string;
@@ -110,7 +108,7 @@ export interface DailyCheckinInsert {
   did_workout: boolean;
   hit_calorie_goal: boolean;
   weight_kg?: number | null;
-  workout_rating?: number | null; // 1-5
+  workout_rating?: number | null; // 1-10 in your UI
   notes?: string | null;
 }
 
@@ -128,6 +126,10 @@ export type DailyCheckinRow = {
   updated_at: string;
 };
 
+// ──────────────────────────
+// Weekly summaries (LLM)
+// ──────────────────────────
+
 export interface WeeklySummaryResponse {
   summary: string; // main conversational summary for the client
 
@@ -138,10 +140,12 @@ export interface WeeklySummaryResponse {
     avgWorkoutRating: number | null;
   };
 
-  nextWeekFocus: string[]; // advice for next week
-  suggestions: string[];
+  // You can keep these if your /generate-weekly-summary route uses them.
+  nextWeekFocus?: string[];
+  suggestions?: string[];
 
-  accountabilityMessage: string[]; // when user struggles reminding messages
+  // In your current weekly-review route, this is a single string
+  accountabilityMessage: string;
 
   calorieAdjustment: {
     recommendation: "keep" | "lower_slightly" | "raise_slightly";
@@ -154,7 +158,11 @@ export interface WeekStats {
   daysWorkedOut: number;
   daysHitCalories: number;
   avgWorkoutRating: number | null;
-};
+}
+
+// ──────────────────────────
+// Food logging
+// ──────────────────────────
 
 export type FoodEntryRow = {
   id: string;
@@ -174,3 +182,58 @@ export type FoodEntryInsert = {
   description: string;
   calories: number;
 };
+
+// ──────────────────────────
+// Weekly reviews
+// ──────────────────────────
+
+export type WeeklyReviewRow = {
+  id: string;
+  profile_id: string;
+  week_start: string; // 'YYYY-MM-DD'
+  submitted_at: string;
+  weight_kg: number | null;
+  perceived_effort: number | null;
+  wins: string | null;
+  struggles: string | null;
+};
+
+export type WeeklyReviewInsert = {
+  profile_id: string;
+  week_start: string;
+  weight_kg: number | null;
+  perceived_effort: number | null;
+  wins: string | null;
+  struggles: string | null;
+};
+
+export type WeeklyReviewLLMResponse = {
+  weeklySummary: WeeklySummaryResponse;
+  updatedProfile: ClientProfile;
+};
+
+// ──────────────────────────
+// UI props
+// ──────────────────────────
+
+export interface TodayPanelProps {
+  profile: ClientProfile | null;
+  todayLabel: string;
+  calorieTarget: number;
+  caloriesLogged: number;
+  caloriesRemaining: number;
+  plannedWorkouts: number;
+  workoutsThisWeek: number;
+  daysHitCalories: number;
+  todayMeals: FoodEntryRow[];
+  newMealDescription: string;
+  setNewMealDescription: (value: string) => void;
+  newMealCalories: string;
+  setNewMealCalories: (value: string) => void;
+  newMealType: string;
+  setNewMealType: (value: string) => void;
+  mealSaving: boolean;
+  mealError: string | null;
+  onAddMeal: () => void;
+  onDeleteMeal: (id: string) => void;
+}

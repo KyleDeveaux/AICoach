@@ -512,13 +512,13 @@ export default function OnboardingPage() {
     };
 
     const callAnswers = {
-      why: "I want to feel healthier, more confident, and proud of my body.",
+      why: "This past year I've gained around 20 pounds and feel like I lost my energy and move has become a chore. Im 33 and wish to feel energetic again and see my abs again.",
       futureVision:
         "In 6–12 months I want to feel leaner, stronger, and more energetic.",
       pastStruggles:
         "I struggle with consistency when life gets busy or when I eat out often.",
       planRealismRating: 8,
-      notes: "Prefers simple meals and clear structure.",
+      notes: "Looking forward to getting started and committed to making a change this time!",
     };
 
     try {
