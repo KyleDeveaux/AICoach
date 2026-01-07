@@ -1,3 +1,4 @@
+// app/dashboard/DailyCheckinModal.tsx
 "use client";
 
 import React from "react";
@@ -14,17 +15,12 @@ type DailyCheckinModalProps = {
   onClose: () => void;
   isBackfillMode: boolean;
 
-  // Title (already computed in DashboardPage)
   title: string;
-
-  // Backfill days: days in this week up to today
   backfillDays: BackfillDay[];
 
-  // Which date we’re saving for
   checkinDate: string;
   setCheckinDate: (date: string) => void;
 
-  // Main fields
   didWorkout: boolean | null;
   setDidWorkout: (value: boolean) => void;
 
@@ -37,11 +33,43 @@ type DailyCheckinModalProps = {
   notes: string;
   setNotes: (value: string) => void;
 
-  // Status / actions
   message: string | null;
   isLoading: boolean;
   onSave: () => void;
 };
+
+function Spinner({
+  size = 16,
+  className = "",
+}: {
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <svg
+      className={`animate-spin ${className}`}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+        fill="none"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+      />
+    </svg>
+  );
+}
 
 export default function DailyCheckinModal({
   isOpen,
@@ -65,16 +93,23 @@ export default function DailyCheckinModal({
 }: DailyCheckinModalProps) {
   if (!isOpen) return null;
 
+  const safeClose = () => {
+    if (!isLoading) onClose();
+  };
+
   return (
     <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/40">
       <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-lg md:p-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <h3 className="text-base font-semibold text-slate-900">{title}</h3>
+
           <button
             type="button"
-            onClick={onClose}
-            className="text-sm text-slate-400 hover:text-slate-600"
+            onClick={safeClose}
+            disabled={isLoading}
+            aria-label="Close"
+            className="text-sm text-slate-400 hover:text-slate-600 disabled:cursor-not-allowed disabled:opacity-60"
           >
             ✕
           </button>
@@ -96,7 +131,8 @@ export default function DailyCheckinModal({
               <select
                 value={checkinDate}
                 onChange={(e) => setCheckinDate(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+                disabled={isLoading}
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
               >
                 {backfillDays.map((d) => (
                   <option key={d.isoDate} value={d.isoDate}>
@@ -115,9 +151,10 @@ export default function DailyCheckinModal({
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => setDidWorkout(true)}
+                onClick={() => !isLoading && setDidWorkout(true)}
+                disabled={isLoading}
                 className={
-                  "flex-1 rounded-full border px-3 py-1.5 text-sm " +
+                  "flex-1 rounded-full border px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-70 " +
                   (didWorkout === true
                     ? "border-blue-600 bg-blue-50 text-blue-700"
                     : "border-slate-200 bg-white text-slate-700")
@@ -127,9 +164,10 @@ export default function DailyCheckinModal({
               </button>
               <button
                 type="button"
-                onClick={() => setDidWorkout(false)}
+                onClick={() => !isLoading && setDidWorkout(false)}
+                disabled={isLoading}
                 className={
-                  "flex-1 rounded-full border px-3 py-1.5 text-sm " +
+                  "flex-1 rounded-full border px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-70 " +
                   (didWorkout === false
                     ? "border-slate-800 bg-slate-900 text-white"
                     : "border-slate-200 bg-white text-slate-700")
@@ -148,9 +186,10 @@ export default function DailyCheckinModal({
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => setHitCalories(true)}
+                onClick={() => !isLoading && setHitCalories(true)}
+                disabled={isLoading}
                 className={
-                  "flex-1 rounded-full border px-3 py-1.5 text-sm " +
+                  "flex-1 rounded-full border px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-70 " +
                   (hitCalories === true
                     ? "border-emerald-600 bg-emerald-50 text-emerald-700"
                     : "border-slate-200 bg-white text-slate-700")
@@ -160,9 +199,10 @@ export default function DailyCheckinModal({
               </button>
               <button
                 type="button"
-                onClick={() => setHitCalories(false)}
+                onClick={() => !isLoading && setHitCalories(false)}
+                disabled={isLoading}
                 className={
-                  "flex-1 rounded-full border px-3 py-1.5 text-sm " +
+                  "flex-1 rounded-full border px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-70 " +
                   (hitCalories === false
                     ? "border-amber-600 bg-amber-50 text-amber-700"
                     : "border-slate-200 bg-white text-slate-700")
@@ -185,7 +225,8 @@ export default function DailyCheckinModal({
                 max={10}
                 value={workoutRating ?? 7}
                 onChange={(e) => setWorkoutRating(Number(e.target.value))}
-                className="w-full"
+                disabled={isLoading}
+                className="w-full disabled:cursor-not-allowed disabled:opacity-70"
               />
               <p className="mt-1 text-xs text-slate-500">
                 Rating:{" "}
@@ -201,7 +242,8 @@ export default function DailyCheckinModal({
             </p>
             <textarea
               rows={3}
-              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              disabled={isLoading}
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
               placeholder="Example: Ate out for lunch, felt low energy at the gym..."
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
@@ -209,28 +251,36 @@ export default function DailyCheckinModal({
           </div>
         </div>
 
-        {message && (
-          <p className="mt-3 text-xs text-slate-500">{message}</p>
-        )}
+        {message && <p className="mt-3 text-xs text-slate-500">{message}</p>}
 
         {/* Actions */}
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
-            onClick={onClose}
-            className="rounded-full px-4 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-100"
+            onClick={safeClose}
+            disabled={isLoading}
+            className="rounded-full px-4 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
           >
             Cancel
           </button>
+
           <button
             type="button"
             onClick={onSave}
             disabled={isLoading}
-            className="rounded-full bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            aria-busy={isLoading}
+            className="inline-flex items-center justify-center gap-2 rounded-full bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
-            {isLoading ? "Saving..." : "Save check-in"}
+            {isLoading && <Spinner size={14} className="text-white/90" />}
+            <span>{isLoading ? "Saving…" : "Save check-in"}</span>
           </button>
         </div>
+
+        {isLoading && (
+          <p className="mt-3 text-[11px] text-slate-500">
+            Saving your check-in…
+          </p>
+        )}
       </div>
     </div>
   );

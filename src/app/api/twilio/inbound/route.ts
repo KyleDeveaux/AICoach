@@ -1,215 +1,194 @@
-// src/app/api/twilio/inbound/route.ts
-import { NextRequest, NextResponse } from "next/server";
+// app/api/twilio/inbound/route.ts
+import { NextResponse } from "next/server";
 import { supabase } from "@/app/lib/supabaseClient";
-import { getTodayLocalDate } from "@/app/lib/utils";
-import type { DailyCheckinInsert } from "@/app/lib/types";
 
-// Optional: tiny helper to normalize phone format if you ever need to tweak it later
-function normalizePhoneNumber(raw: string | null): string | null {
-  if (!raw) return null;
-  // Twilio sends E.164 like "+15551234567" – we'll just trim spaces for now.
-  return raw.trim();
+type SmsCheckinStage = "asked_workout" | "asked_calories" | "completed";
+
+interface SmsCheckinStateRow {
+  id: string;
+  profile_id: string;
+  phone_number: string;
+  checkin_date: string; // YYYY-MM-DD
+  stage: SmsCheckinStage;
+  did_workout: boolean | null;
+  hit_calorie_goal: boolean | null;
+  created_at: string;
+  updated_at: string;
 }
 
-type ParsedSmsCheckin = {
-  didWorkout: boolean | null;
-  hitCalories: boolean | null;
-  rating: number | null;
-  notes: string | null;
-};
+// Simple yes/no parser
+function parseYesNo(text: string): boolean | null {
+  const t = text.trim().toLowerCase();
 
-// Parse "WORKOUT: yes\nCALORIES: no\nRATING: 7\nNOTES: ..." style
-function parseKeyValueStyle(body: string): ParsedSmsCheckin | null {
-  const text = body.trim();
-
-  const boolFrom = (val: string | undefined | null): boolean | null => {
-    if (!val) return null;
-    const v = val.toLowerCase();
-    if (v === "yes" || v === "y") return true;
-    if (v === "no" || v === "n") return false;
-    return null;
-  };
-
-  const workoutMatch = text.match(/workout\s*:\s*(yes|no|y|n)/i);
-  const caloriesMatch = text.match(/calories?\s*:\s*(yes|no|y|n)/i);
-  const ratingMatch = text.match(/rating\s*:\s*(\d{1,2})/i);
-  const notesMatch = text.match(/notes?\s*:\s*([\s\S]+)$/i);
-
-
-  if (!workoutMatch && !caloriesMatch && !ratingMatch && !notesMatch) {
-    return null; // doesn't look like key-value style
+  if (/(^|\s)(y|yes|yeah|yep|sure|of course|def|definitely)(\s|$)/i.test(t)) {
+    return true;
   }
-
-  const rawRating = ratingMatch ? parseInt(ratingMatch[1], 10) : NaN;
-  const rating =
-    !isNaN(rawRating) && rawRating >= 1 && rawRating <= 10
-      ? rawRating
-      : null;
-
-  return {
-    didWorkout: boolFrom(workoutMatch?.[1]),
-    hitCalories: boolFrom(caloriesMatch?.[1]),
-    rating,
-    notes: notesMatch ? notesMatch[1].trim() : null,
-  };
-}
-
-// Parse compact "Y N 7 felt tired" style
-function parseCompactStyle(body: string): ParsedSmsCheckin | null {
-  const text = body.trim();
-
-  // Y/N Y/N [rating] [notes...]
-  const match = text.match((
-    /^\s*([YyNn])\s+([YyNn])(?:\s+(\d{1,2}))?(?:\s+([\s\S]+))?$/i)
-  );
-  if (!match) return null;
-
-  const ynToBool = (ch: string): boolean => /[Yy]/.test(ch);
-
-  const didWorkout = ynToBool(match[1]);
-  const hitCalories = ynToBool(match[2]);
-
-  let rating: number | null = null;
-  if (match[3]) {
-    const n = parseInt(match[3], 10);
-    if (!isNaN(n) && n >= 1 && n <= 10) rating = n;
+  if (/(^|\s)(n|no|nope|nah|not really)(\s|$)/i.test(t)) {
+    return false;
   }
-
-  const notes = match[4] ? match[4].trim() : null;
-
-  return { didWorkout, hitCalories, rating, notes };
-}
-
-function parseSmsBody(body: string): ParsedSmsCheckin | null {
-  // Try key-value first (more explicit)
-  const kv = parseKeyValueStyle(body);
-  if (kv) return kv;
-
-  // Fall back to compact form
-  const compact = parseCompactStyle(body);
-  if (compact) return compact;
-
   return null;
 }
 
-// Simple helper to send TwiML responses
-function twimlMessage(message: string): NextResponse {
-  const twiml = `
-    <?xml version="1.0" encoding="UTF-8"?>
-    <Response>
-      <Message>${message}</Message>
-    </Response>
-  `.trim();
-
-  return new NextResponse(twiml, {
+function twimlMessage(message: string): Response {
+  const xml = `<Response><Message>${message}</Message></Response>`;
+  return new Response(xml, {
     status: 200,
-    headers: {
-      "Content-Type": "text/xml",
-    },
+    headers: { "Content-Type": "text/xml" },
   });
 }
 
-// Handy GET handler so you can test in the browser
-export async function GET() {
-  return NextResponse.json({
-    ok: true,
-    message: "Twilio inbound route is alive 🚀",
-  });
-}
-
-// Twilio will call this with POST
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
-    // Twilio sends x-www-form-urlencoded
-    const bodyText = await req.text();
-    const params = new URLSearchParams(bodyText);
-
-    const rawFrom = params.get("From");
-    const from = normalizePhoneNumber(rawFrom);
-    const body = params.get("Body") || "";
-
-    console.log("📩 Incoming SMS from Twilio:", { from, body });
+    const formData = await req.formData();
+    const from = formData.get("From")?.toString() ?? "";
+    const body = formData.get("Body")?.toString() ?? "";
 
     if (!from) {
-      return twimlMessage(
-        "We couldn't read your phone number. Please try again."
-      );
+      // Twilio just needs a 200. We'll no-op.
+      return twimlMessage("Hey! I couldn't see your number. Try again?");
     }
 
-    // 1) Look up client profile by phone number
-    const { data: profile, error: profileError } = await supabase
+    // 1) Find the profile tied to this phone number
+    const { data: profiles, error: profileError } = await supabase
       .from("client_profiles")
-      .select("*")
-      .eq("phone_number", from)
-      .eq("allow_sms_checkins", true)
+      .select("id, first_name, sms_phone_number")
+      .eq("sms_phone_number", from)
       .maybeSingle();
 
-    if (profileError) {
-      console.error("Error fetching profile for SMS check-in:", profileError);
+    if (profileError || !profiles) {
+      console.error("No profile found for phone:", from, profileError);
       return twimlMessage(
-        "Sorry, there was an error looking up your profile. Please try again later."
+        "Hey! I don't recognize this number. Please update your phone in settings inside the app."
       );
     }
 
-    if (!profile) {
-      console.warn("No SMS-enabled profile found for phone:", from);
+    const profile = profiles;
+    const todayIso = new Date().toISOString().slice(0, 10);
+
+    // 2) Get today's SMS check-in state
+    const { data: stateRow, error: stateError } = await supabase
+      .from("sms_checkin_states")
+      .select("*")
+      .eq("profile_id", profile.id)
+      .eq("checkin_date", todayIso)
+      .maybeSingle();
+
+    if (stateError) {
+      console.error("Error loading sms_checkin_states:", stateError);
       return twimlMessage(
-        "We don't recognize this phone number for SMS check-ins. " +
-          "Please check your settings in the app."
+        "Something went wrong on my side while logging this. Try again later."
       );
     }
 
-    // 2) Parse the SMS body into check-in fields
-    const parsed = parseSmsBody(body);
-
-    if (!parsed || parsed.didWorkout === null || parsed.hitCalories === null) {
+    if (!stateRow || stateRow.stage === "completed") {
+      // No active conversation for today. For now we just tell them it's not needed.
       return twimlMessage(
-        "I couldn't understand that. Reply like:\n" +
-          'WORKOUT: yes/no\nCALORIES: yes/no\nRATING: 7\nNOTES: quick recap\n\n' +
-          "Or simply: Y N 7 felt tired"
+        "Hey! I don't have an open check-in for today. You'll get an evening text when it's time to log your day 💪"
       );
     }
 
-    const todayIso = getTodayLocalDate(); // same helper you use on the frontend
+    const state = stateRow as SmsCheckinStateRow;
+    const yesNo = parseYesNo(body);
 
-    const payload: DailyCheckinInsert = {
-      profile_id: profile.id,
-      checkin_date: todayIso,
-      did_workout: parsed.didWorkout,
-      hit_calorie_goal: parsed.hitCalories,
-      workout_rating: parsed.rating ?? null,
-      weight_kg: null,
-      notes: parsed.notes ?? null,
-    };
-
-    // 3) Upsert into daily_checkins so we don't duplicate a day
-    const { error: upsertError } = await supabase
-      .from("daily_checkins")
-      .upsert(payload, {
-        onConflict: "profile_id,checkin_date",
-      });
-
-    if (upsertError) {
-      console.error("Error upserting daily_checkins via SMS:", upsertError);
+    if (yesNo === null) {
+      // Not clearly yes/no → nudge them to answer that way
       return twimlMessage(
-        "Something went wrong saving your check-in. Please try again later."
+        "Got your message, but I need a simple YES or NO so I can log today correctly 💬"
       );
     }
 
-    // 4) Friendly confirmation back to the client
-    const workoutText = parsed.didWorkout ? "✅ Workout logged" : "❌ No workout";
-    const caloriesText = parsed.hitCalories
-      ? "✅ Calories on target"
-      : "❌ Calories off target";
+    // 3) Handle stages
+    if (state.stage === "asked_workout") {
+      // Save did_workout, move to calories question
+      const { error: updateError } = await supabase
+        .from("sms_checkin_states")
+        .update({
+          did_workout: yesNo,
+          stage: "asked_calories" as SmsCheckinStage,
+        })
+        .eq("id", state.id);
 
-    const ratingText =
-      parsed.rating != null ? `Rating: ${parsed.rating}/10. ` : "";
+      if (updateError) {
+        console.error("Error updating sms_checkin_states (workout):", updateError);
+        return twimlMessage(
+          "Something went wrong while saving that. Can you try again in a minute?"
+        );
+      }
 
+      const followup = yesNo
+        ? `Nice job getting your workout in today, ${profile.first_name}! 🙌 Did you stay close to your calorie target? Reply YES or NO.`
+        : `It's okay if today didn't go as planned, ${profile.first_name} 💛 Did you at least stay close to your calorie target? Reply YES or NO.`;
+
+      return twimlMessage(followup);
+    }
+
+    if (state.stage === "asked_calories") {
+      // Save hit_calorie_goal, complete state, and write daily_checkins row
+      const { error: updateError } = await supabase
+        .from("sms_checkin_states")
+        .update({
+          hit_calorie_goal: yesNo,
+          stage: "completed" as SmsCheckinStage,
+        })
+        .eq("id", state.id);
+
+      if (updateError) {
+        console.error("Error updating sms_checkin_states (calories):", updateError);
+        return twimlMessage(
+          "Something went wrong while saving that. Can you try again in a minute?"
+        );
+      }
+
+      const didWorkout = state.did_workout ?? false;
+      const hitCalories = yesNo;
+
+      // Upsert today's daily_checkins row with no notes
+      const { error: checkinError } = await supabase
+        .from("daily_checkins")
+        .upsert(
+          {
+            profile_id: profile.id,
+            checkin_date: todayIso,
+            did_workout: didWorkout,
+            hit_calorie_goal: hitCalories,
+            workout_rating: null,
+            weight_kg: null,
+            notes: null,
+          },
+          {
+            onConflict: "profile_id,checkin_date",
+          }
+        );
+
+      if (checkinError) {
+        console.error("Error upserting daily_checkins:", checkinError);
+        // We still reply so the user isn't stuck.
+      }
+
+      // Wrap-up message based on combo
+      let wrapUp: string;
+
+      if (didWorkout && hitCalories) {
+        wrapUp = `That’s a dialed-in day, ${profile.first_name} 🔥 You got your workout in AND stayed on calories. Keep stacking days like this.`;
+      } else if (didWorkout && !hitCalories) {
+        wrapUp = `Great job showing up for your workout today 💪 Food was a bit loose, but we can tighten that up tomorrow. Progress > perfection.`;
+      } else if (!didWorkout && hitCalories) {
+        wrapUp = `Nice work staying on top of your calories today 🍽️ The workout can be made up – what matters is you’re still in the game.`;
+      } else {
+        wrapUp = `Today wasn’t perfect, but you’re still in this 💛 Let’s treat it like a data point, not a verdict. We reset tomorrow.`;
+      }
+
+      return twimlMessage(wrapUp);
+    }
+
+    // Fallback (shouldn’t really hit this)
     return twimlMessage(
-      `${workoutText}, ${caloriesText}. ${ratingText}Your check-in for today is saved.`
+      "Something about this check-in looks off. Try again later or log today inside the app."
     );
   } catch (err) {
-    console.error("❌ Error in Twilio inbound handler:", err);
-    return new NextResponse("Server error", { status: 500 });
+    console.error("Twilio inbound error:", err);
+    return twimlMessage(
+      "I hit an error reading that message. Please try again in a bit."
+    );
   }
 }

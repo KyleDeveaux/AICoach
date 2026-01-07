@@ -9,7 +9,34 @@ type RightColumnPanelProps = {
   canGenerate: boolean;
   onGenerateWeeklySummary: () => void;
   profile: ClientProfile | null;
+
+  // ✅ NEW: real-time counters (NOT from LLM)
+  streakCount: number;
+  workoutsCount: number;
+  calorieDaysCount: number;
 };
+
+function StatCard({
+  label,
+  value,
+}: {
+  label: string;
+  value: number | string;
+}) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      {/* Fixed-height label so the number starts at the same Y position in every card */}
+      <p className="h-4 text-xs font-medium leading-4 text-slate-500">
+        {label}
+      </p>
+
+      {/* Consistent spacing + line-height so numbers align perfectly */}
+      <p className="mt-3 text-2xl font-semibold leading-none text-slate-900">
+        {value}
+      </p>
+    </div>
+  );
+}
 
 export default function RightColumnPanel({
   weeklySummary,
@@ -17,6 +44,9 @@ export default function RightColumnPanel({
   canGenerate,
   onGenerateWeeklySummary,
   profile,
+  streakCount,
+  workoutsCount,
+  calorieDaysCount,
 }: RightColumnPanelProps) {
   return (
     <section className="space-y-6">
@@ -24,6 +54,7 @@ export default function RightColumnPanel({
       <div className="rounded-2xl bg-white p-5 shadow-sm shadow-slate-200 md:p-6">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-base font-semibold md:text-lg">This Week</h2>
+
           <button
             onClick={onGenerateWeeklySummary}
             disabled={isGeneratingSummary || !canGenerate}
@@ -33,36 +64,24 @@ export default function RightColumnPanel({
           </button>
         </div>
 
+        {/* ✅ Always show accurate counters (not AI-derived) */}
+        <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
+          <StatCard label="Streak" value={streakCount} />
+          <StatCard label="Workouts" value={workoutsCount} />
+          <StatCard label="Calorie days" value={calorieDaysCount} />
+        </div>
+
         {weeklySummary ? (
           <>
-            <p className="mt-3 text-sm text-slate-700">
+            <p className="mt-4 text-sm text-slate-700">
               {weeklySummary.summary}
             </p>
-            <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
-                <p className="text-slate-500">Days logged</p>
-                <p className="mt-1 text-base font-semibold text-slate-900">
-                  {weeklySummary.adherence.totalDays}
-                </p>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
-                <p className="text-slate-500">Workouts</p>
-                <p className="mt-1 text-base font-semibold text-slate-900">
-                  {weeklySummary.adherence.daysWorkedOut}
-                </p>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
-                <p className="text-slate-500">Calorie days</p>
-                <p className="mt-1 text-base font-semibold text-slate-900">
-                  {weeklySummary.adherence.daysHitCalories}
-                </p>
-              </div>
-            </div>
 
             <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs">
               <p className="font-semibold text-blue-800">
                 Calorie recommendation
               </p>
+
               <p className="mt-1 text-blue-800/90">
                 {weeklySummary.calorieAdjustment.recommendation === "keep" &&
                   "Keep your current calories – let’s tighten habits first."}
@@ -73,13 +92,14 @@ export default function RightColumnPanel({
                   "raise_slightly" &&
                   "Slightly raise calories – we may need better recovery and energy for your workouts."}
               </p>
+
               <p className="mt-1 text-[11px] text-blue-700/80">
                 {weeklySummary.calorieAdjustment.explanation}
               </p>
             </div>
           </>
         ) : (
-          <p className="mt-3 text-sm text-slate-600">
+          <p className="mt-4 text-sm text-slate-600">
             Once you log a few days, I&apos;ll break down your week here and
             suggest 1–2 simple improvements.
           </p>
@@ -103,6 +123,7 @@ export default function RightColumnPanel({
           {profile?.goal_why ||
             "We’ll save your main reason for starting this journey here so we can remind you when things get tough."}
         </p>
+
         {profile?.past_struggles && (
           <p className="mt-3 text-xs text-slate-500">
             Things that usually knock you off track:{" "}

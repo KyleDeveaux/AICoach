@@ -109,3 +109,28 @@ export function getCurrentWeekDays(): Array<{
 
   return days;
 }
+
+export const normalizePhoneNumberToE164 = (raw: string): string | null => {
+  // Very basic US-only assumption for now.
+  const digits = raw.replace(/\D/g, "");
+
+  if (!digits) return null;
+
+  // 10 digits → treat as US number
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+
+  // 11 digits starting with 1 → +1XXXXXXXXXX
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+
+  // If user already typed something like +44..., keep it if it has enough digits
+  if (raw.trim().startsWith("+") && digits.length >= 8) {
+    return `+${digits}`;
+  }
+
+  // If it doesn't match these, we fail gracefully
+  return null;
+}

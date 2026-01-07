@@ -1,15 +1,24 @@
 "use client";
 
 import React, { useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
 import type { ClientProfile } from "../lib/types";
+import Link from "next/link";
+
+const navItems = [
+  { href: "/dashboard", label: "Home" },
+  { href: "/progress", label: "Progress" },
+  { href: "/body-check", label: "Body Check" },
+];
 
 type DashboardNavProps = {
   profile: ClientProfile | null;
 };
 
 export default function DashboardNav({ profile }: DashboardNavProps) {
+
+  const pathname = usePathname();
   const router = useRouter();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
@@ -42,6 +51,26 @@ export default function DashboardNav({ profile }: DashboardNavProps) {
             </span>
           </div>
         </div>
+
+        <nav className="hidden gap-4 text-xs font-medium text-slate-600 sm:flex">
+            {navItems.map((item) => {
+              const active = pathname?.startsWith(item.href);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={[
+                    "rounded-full px-3 py-1 transition",
+                    active
+                      ? "bg-slate-900 text-white"
+                      : "hover:bg-slate-100 hover:text-slate-900",
+                  ].join(" ")}
+                >
+                  {item.label}
+                </Link>
+              );
+            })}
+          </nav>
 
         {/* Right side: user info + settings */}
         {profile && (
