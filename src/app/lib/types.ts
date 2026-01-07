@@ -65,25 +65,37 @@ export interface ClientProfile {
   id: string;
   first_name: string;
   last_name: string;
-  age: string; // keep as string in form, convert to number before sending
-  gender: "male" | "female";
+  age: string; // you can later switch this to number if you want
+  gender: "male" | "female" | "other";
   height_cm: string;
   weight_kg: string;
   goalType: GoalType;
   goalWeight_kg: string;
-  calorie_target: number | null; // matches DB column
+  calorie_target: number | null;
   currentWorkoutsPerWeek: string;
   realistic_workouts_per_week: string;
   workSchedule: string;
   preferredWorkoutTime: string;
   equipment: "none" | "home_gym" | "commercial_gym";
-  estimatedSteps: string; // e.g. "9k-10k"
+  estimatedSteps: string;
   goal_why?: string | null;
   past_struggles?: string | null;
   workout_split?: string[] | null;
   weekly_workout_schedule?: WeeklyWorkoutSession[] | null;
+
+  active_focus_areas?: string[] | null;
+  active_plan_notes?: string | null;
+  active_focus_updated_at?: string | null;
+
+  // ✅ contact info (now actually used)
   phone_number?: string | null;
+  email?: string | null;
+  consent_to_call?: boolean | null;
+
+  // ✅ SMS-specific for Twilio
+  sms_phone_number?: string | null;
   allow_sms_checkins?: boolean | null;
+  sms_checkins_enabled?: boolean | null;
 }
 
 // ──────────────────────────
@@ -236,4 +248,22 @@ export interface TodayPanelProps {
   mealError: string | null;
   onAddMeal: () => void;
   onDeleteMeal: (id: string) => void;
+}
+
+export type SmsCheckinStage =
+  | "idle"
+  | "asked_workout"
+  | "asked_calories"
+  | "asked_notes"
+  | "completed";
+
+export interface SmsCheckinState {
+  id: string;
+  profile_id: string;
+  checkin_date: string; // YYYY-MM-DD
+  stage: SmsCheckinStage;
+  did_workout: boolean | null;
+  hit_calorie_goal: boolean | null;
+  notes: string | null;
+  last_message_at: string;
 }

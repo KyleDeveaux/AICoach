@@ -6,6 +6,7 @@ import { supabase } from "../lib/supabaseClient";
 import type { InitialPlanResponse } from "../lib/types";
 import { saveClientProfile } from "../lib/saveClientProfile";
 import { DailyCalorieNeeds } from "../lib/macros";
+import { normalizePhoneNumberToE164 } from "../lib/utils";
 
 type GoalType = "lose_weight" | "gain_muscle" | "recomp";
 
@@ -463,6 +464,11 @@ export default function OnboardingPage() {
       return;
     }
 
+    // 🔹 Normalize phone once
+    const normalizedSmsPhone = normalizePhoneNumberToE164(form.phoneNumber);
+    const smsPhoneForDb =
+      form.consentToCall && normalizedSmsPhone ? normalizedSmsPhone : null;
+
     const clientProfileBase = {
       first_name: form.first_name,
       last_name: form.last_name,
@@ -478,9 +484,15 @@ export default function OnboardingPage() {
       preferredWorkoutTime: form.preferredWorkoutTime,
       equipment: form.equipment,
       estimatedSteps: form.estimatedSteps,
+
+      // ✅ raw contact info for UI
       phone_number: form.phoneNumber,
       email: form.email,
       consent_to_call: form.consentToCall,
+
+      // ✅ Twilio-related fields in DB
+      sms_phone_number: smsPhoneForDb,
+      allow_sms_checkins: !!smsPhoneForDb,
     };
 
     const tdee = DailyCalorieNeeds(
@@ -512,13 +524,14 @@ export default function OnboardingPage() {
     };
 
     const callAnswers = {
-      why: "This past year I've gained around 20 pounds and feel like I lost my energy and move has become a chore. Im 33 and wish to feel energetic again and see my abs again.",
+      why: "To stay in top shape for the job i am in.",
       futureVision:
         "In 6–12 months I want to feel leaner, stronger, and more energetic.",
       pastStruggles:
-        "I struggle with consistency when life gets busy or when I eat out often.",
+        "Time manageent and diet consistency have been my biggest challenges.",
       planRealismRating: 8,
-      notes: "Looking forward to getting started and committed to making a change this time!",
+      notes:
+        "Looking forward to getting started and committed to making a change this time!",
     };
 
     try {

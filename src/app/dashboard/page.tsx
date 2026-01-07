@@ -1,3 +1,4 @@
+// app/dashboard/page.tsx
 "use client";
 
 import { useEffect, useState, FormEvent } from "react";
@@ -35,11 +36,46 @@ type WeekDayInfo = {
   isToday?: boolean;
 };
 
+function Spinner({
+  size = 18,
+  className = "",
+}: {
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <svg
+      className={`animate-spin ${className}`}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+        fill="none"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+      />
+    </svg>
+  );
+}
+
 export default function DashboardPage() {
   const router = useRouter();
 
   const [profile, setProfile] = useState<ClientProfile | null>(null);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  // ✅ NEW: top-level dashboard loader (prevents blank flash)
+  const [isDashboardLoading, setIsDashboardLoading] = useState(true);
 
   const [weeklySummary, setWeeklySummary] =
     useState<WeeklySummaryResponse | null>(null);
@@ -48,11 +84,14 @@ export default function DashboardPage() {
   // Check-in state
   const [isCheckinOpen, setIsCheckinOpen] = useState(false);
   const [didWorkoutToday, setDidWorkoutToday] = useState<boolean | null>(null);
-  const [hitCaloriesToday, setHitCaloriesToday] = useState<boolean | null>(null);
+  const [hitCaloriesToday, setHitCaloriesToday] = useState<boolean | null>(
+    null
+  );
   const [workoutRating, setWorkoutRating] = useState<number | null>(null);
   const [checkinNotes, setCheckinNotes] = useState("");
   const [checkinLoading, setCheckinLoading] = useState(false);
   const [checkinMessage, setCheckinMessage] = useState<string | null>(null);
+  const [streakCount, setStreakCount] = useState<number>(0);
 
   const [weekStats, setWeekStats] = useState<WeekStats>({
     totalCheckins: 0,
@@ -80,6 +119,9 @@ export default function DashboardPage() {
   // For gating logic (DB-backed)
   const [hasReviewForReviewWeek, setHasReviewForReviewWeek] = useState(false);
   const [hasActivityInReviewWeek, setHasActivityInReviewWeek] = useState(false);
+  const [hasTodayCheckinInReviewWeek, setHasTodayCheckinInReviewWeek] =
+    useState(false);
+  const [isPreExistingUser, setIsPreExistingUser] = useState(false);
 
   // FOOD LOGGING STATE
   const [todayMeals, setTodayMeals] = useState<FoodEntryRow[]>([]);
@@ -100,7 +142,6 @@ export default function DashboardPage() {
   const todayDate = new Date();
   const dayOfWeek = todayDate.getDay(); // 0 = Sunday, 1 = Monday, ...
   const isSunday = dayOfWeek === 0;
-  const isMondayOrLater = dayOfWeek >= 1;
 
   // Week we are reviewing:
   // - Sunday → current week
@@ -161,98 +202,211 @@ export default function DashboardPage() {
     });
   }
 
+  function toNum(value: unknown, fallback: number) {
+    const n = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function normalizeWorkoutForCard(workout: any) {
+    if (!workout) return null;
+
+    return {
+      dayOfWeek: String(workout.dayOfWeek ?? ""),
+      workoutName: String(workout.workoutName ?? "Workout"),
+      exercises: Array.isArray(workout.exercises)
+        ? workout.exercises.map((ex: any) => ({
+            name: String(ex.name ?? "Exercise"),
+            reps: toNum(ex.reps, 10),
+            sets: toNum(ex.sets, 3),
+            notes: typeof ex.notes === "string" ? ex.notes : null,
+            gifUrl: null,
+            rest_seconds: toNum(ex.rest_seconds, 60),
+            gifSearchTerm:
+              typeof ex.gifSearchTerm === "string" && ex.gifSearchTerm.trim()
+                ? ex.gifSearchTerm.trim()
+                : String(ex.name ?? "").toLowerCase(),
+          }))
+        : [],
+    };
+  }
+
+  function shiftIsoDate(iso: string, deltaDays: number) {
+    const [y, m, d] = iso.split("-").map(Number);
+    const dt = new Date(y, (m ?? 1) - 1, d ?? 1);
+    dt.setDate(dt.getDate() + deltaDays);
+
+    const yyyy = dt.getFullYear();
+    const mm = String(dt.getMonth() + 1).padStart(2, "0");
+    const dd = String(dt.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  async function loadStreak(profileId: string) {
+    // pull a reasonable window (covers long streaks without heavy queries)
+    const { data, error } = await supabase
+      .from("daily_checkins")
+      .select("checkin_date")
+      .eq("profile_id", profileId)
+      .order("checkin_date", { ascending: false })
+      .limit(120);
+
+    if (error) {
+      console.error("Error loading streak:", error);
+      setStreakCount(0);
+      return;
+    }
+
+    const dateSet = new Set(
+      (data ?? [])
+        .map((r: any) => r.checkin_date)
+        .filter((x: any) => typeof x === "string")
+    );
+
+    // streak is consecutive days ending TODAY
+    let streak = 0;
+    let cursor = todayIso;
+
+    while (dateSet.has(cursor)) {
+      streak++;
+      cursor = shiftIsoDate(cursor, -1);
+    }
+
+    setStreakCount(streak);
+  }
+
   // Load profile on mount, then week stats + review week info + today's meals
   useEffect(() => {
+    let cancelled = false;
+
     async function loadProfile() {
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
+      setIsDashboardLoading(true);
 
-      if (userError) {
-        console.error("Error getting user:", userError);
-        return;
-      }
-      if (!user) {
-        console.warn("No logged in user");
-        return;
-      }
+      try {
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
 
-      const { data, error } = await supabase
-        .from("client_profiles")
-        .select("*")
-        .eq("user_id", user.id)
-        .single();
+        if (userError) {
+          console.error("Error getting user:", userError);
+          return;
+        }
+        if (!user) {
+          console.warn("No logged in user");
+          return;
+        }
 
-      if (error) {
-        console.error("Error loading client profile:", error);
-        return;
-      }
+        const { data, error } = await supabase
+          .from("client_profiles")
+          .select("*")
+          .eq("user_id", user.id)
+          .single();
 
-      const clientProfile = data as ClientProfile;
-      setProfile(clientProfile);
+        if (error) {
+          console.error("Error loading client profile:", error);
+          return;
+        }
 
-      // Week stats (current week)
-      await loadWeekStats(clientProfile.id);
+        if (cancelled) return;
 
-      // Weekly review existence for review week
-      const { data: reviewData, error: reviewError } = await supabase
-        .from("weekly_reviews")
-        .select("id")
-        .eq("profile_id", clientProfile.id)
-        .eq("week_start", reviewWeekStart)
-        .maybeSingle();
+        const clientProfile = data as ClientProfile;
+        setProfile(clientProfile);
 
-      if (reviewError && reviewError.code !== "PGRST116") {
-        console.error("Error loading weekly review:", reviewError);
-      } else if (reviewData) {
-        setHasReviewForReviewWeek(true);
-      }
+        // Week stats (current week)
+        await loadWeekStats(clientProfile.id);
+        await loadStreak(clientProfile.id);
 
-      // Activity in review week?
-      const { data: reviewWeekCheckins, error: reviewWeekCheckinsError } =
-        await supabase
+        // Weekly review existence for review week
+        const { data: reviewData, error: reviewError } = await supabase
+          .from("weekly_reviews")
+          .select("id")
+          .eq("profile_id", clientProfile.id)
+          .eq("week_start", reviewWeekStart)
+          .maybeSingle();
+
+        if (reviewError && (reviewError as any).code !== "PGRST116") {
+          console.error("Error loading weekly review:", reviewError);
+        } else if (reviewData) {
+          setHasReviewForReviewWeek(true);
+        }
+
+        // Activity in review week? + does *today* have a check-in?
+        const { data: reviewWeekCheckins, error: reviewWeekCheckinsError } =
+          await supabase
+            .from("daily_checkins")
+            .select("id, checkin_date")
+            .eq("profile_id", clientProfile.id)
+            .gte("checkin_date", reviewWeekStart)
+            .lte("checkin_date", reviewWeekEnd);
+
+        if (reviewWeekCheckinsError) {
+          console.error(
+            "Error loading review-week checkins:",
+            reviewWeekCheckinsError
+          );
+        } else if (Array.isArray(reviewWeekCheckins)) {
+          const anyActivity = reviewWeekCheckins.length > 0;
+          setHasActivityInReviewWeek(anyActivity);
+
+          const todayCheckinExists = reviewWeekCheckins.some(
+            (row: any) => row.checkin_date === todayIso
+          );
+          setHasTodayCheckinInReviewWeek(todayCheckinExists);
+        } else {
+          setHasActivityInReviewWeek(false);
+          setHasTodayCheckinInReviewWeek(false);
+        }
+
+        // Pre-existing user check: any check-in on or before end of review week
+        const { data: historyCheckins, error: historyError } = await supabase
           .from("daily_checkins")
           .select("id")
           .eq("profile_id", clientProfile.id)
-          .gte("checkin_date", reviewWeekStart)
-          .lte("checkin_date", reviewWeekEnd);
+          .lte("checkin_date", reviewWeekEnd)
+          .limit(1);
 
-      if (reviewWeekCheckinsError) {
-        console.error(
-          "Error loading review-week checkins:",
-          reviewWeekCheckinsError
-        );
-      } else {
-        setHasActivityInReviewWeek(
-          Array.isArray(reviewWeekCheckins) && reviewWeekCheckins.length > 0
-        );
-      }
+        if (historyError) {
+          console.error("Error loading historical checkins:", historyError);
+        } else {
+          setIsPreExistingUser(
+            Array.isArray(historyCheckins) && historyCheckins.length > 0
+          );
+        }
 
-      // Today's meals
-      const { data: mealsData, error: mealsError } = await supabase
-        .from("food_entries")
-        .select("*")
-        .eq("profile_id", clientProfile.id)
-        .eq("entry_date", todayIso)
-        .order("created_at", { ascending: true });
+        // Today's meals
+        const { data: mealsData, error: mealsError } = await supabase
+          .from("food_entries")
+          .select("*")
+          .eq("profile_id", clientProfile.id)
+          .eq("entry_date", todayIso)
+          .order("created_at", { ascending: true });
 
-      if (mealsError) {
-        console.error("Error loading food entries:", mealsError);
-      } else if (mealsData) {
-        setTodayMeals(mealsData as FoodEntryRow[]);
+        if (mealsError) {
+          console.error("Error loading food entries:", mealsError);
+        } else if (mealsData) {
+          setTodayMeals(mealsData as FoodEntryRow[]);
+        }
+      } finally {
+        if (!cancelled) setIsDashboardLoading(false);
       }
     }
 
     loadProfile();
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [todayIso, reviewWeekStart, reviewWeekEnd]);
 
-  // Derived gating logic for weekly review
-  const requiresWeeklyReview =
-    hasActivityInReviewWeek && !hasReviewForReviewWeek;
+  // Derived gating logic for weekly review:
+  const requiresWeeklyReview = isPreExistingUser && !hasReviewForReviewWeek;
+
+  // Sunday: soft banner only
   const shouldShowWeeklyReviewBanner = isSunday && requiresWeeklyReview;
-  const shouldForceWeeklyReview = isMondayOrLater && requiresWeeklyReview;
+
+  // Monday+ (any non-Sunday): hard gate until weekly review is submitted
+  const shouldForceWeeklyReview = !isSunday && requiresWeeklyReview;
 
   // Auto-open weekly review modal on Monday+ if required
   useEffect(() => {
@@ -415,7 +569,6 @@ export default function DashboardPage() {
     }
   }
 
-  // DAILY CHECK-IN HANDLER (today or backfill)
   async function handleSaveCheckin() {
     if (!profile?.id) {
       setCheckinMessage("Profile not loaded yet.");
@@ -446,6 +599,12 @@ export default function DashboardPage() {
       await saveDailyCheckin(payload);
 
       await loadWeekStats(profile.id);
+      await loadStreak(profile.id);
+
+      if (dateToSave >= reviewWeekStart && dateToSave <= reviewWeekEnd) {
+        setHasActivityInReviewWeek(true);
+        if (dateToSave === todayIso) setHasTodayCheckinInReviewWeek(true);
+      }
 
       setCheckinMessage("Check-in saved ✅");
       setIsCheckinOpen(false);
@@ -499,24 +658,23 @@ export default function DashboardPage() {
   const calorieTarget = profile?.calorie_target ?? 0;
   const caloriesRemaining = calorieTarget - caloriesLogged;
 
-  const plannedWorkouts = profile?.realistic_workouts_per_week ?? 0;
+  const plannedWorkouts = Number(profile?.realistic_workouts_per_week ?? 0);
   const workoutsThisWeek = weekStats.daysWorkedOut;
   const daysHitCalories = weekStats.daysHitCalories;
-  const totalDaysLogged = weekStats.totalCheckins; // available if needed
 
-  // Workout calendar derived data
   const weekDaysInfo = getCurrentWeekDays() as WeekDayInfo[];
   const workoutDaysSet = new Set(
     (profile?.weekly_workout_schedule ?? []).map(
       (w: any) => w.dayOfWeek as string
     )
   );
-  const selectedWorkout =
+  const selectedWorkoutRaw =
     profile?.weekly_workout_schedule?.find(
       (w: any) => w.dayOfWeek === selectedDayName
     ) ?? null;
 
-  // For check-in modal title
+  const selectedWorkout = normalizeWorkoutForCard(selectedWorkoutRaw);
+
   const selectedDayInfoForCheckin = weekDaysInfo.find(
     (d) => d.isoDate === checkinDate
   );
@@ -527,18 +685,31 @@ export default function DashboardPage() {
       ? `Check-in for ${selectedDayInfoForCheckin.dayName}, ${selectedDayInfoForCheckin.dateLabel}`
       : "Check-in";
 
-  // Past or today days in this week (for backfill)
   const pastOrTodayDaysThisWeek = weekDaysInfo.filter(
     (d) => d.isoDate <= todayIso
   );
   const canBackfill = pastOrTodayDaysThisWeek.length > 1;
 
+  const disableTodayCheckinButton = isSunday && hasReviewForReviewWeek;
+
+  // ✅ NEW: show a clean loading screen while dashboard data is loading
+  if (isDashboardLoading || !profile) {
+    return (
+      <main className="min-h-screen bg-slate-100 text-slate-900">
+        <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4">
+          <div className="flex items-center gap-3 rounded-2xl bg-white px-5 py-4 shadow-sm shadow-slate-200">
+            <Spinner size={18} className="text-slate-700" />
+            <p className="text-sm text-slate-700">Loading your dashboard…</p>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
-      {/* Top nav */}
       <DashboardNav profile={profile} />
 
-      {/* Weekly review banner (Sunday only, soft nudge) */}
       {shouldShowWeeklyReviewBanner && (
         <div className="bg-slate-100">
           <div className="mx-auto max-w-6xl px-4 pt-4 md:pt-6">
@@ -547,11 +718,12 @@ export default function DashboardPage() {
                 <div className="mt-1 h-2.5 w-2.5 flex-shrink-0 rounded-full bg-amber-500" />
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">
-                    Weekly review ready
+                    Weekly reset
                   </p>
                   <p className="mt-1 text-sm text-amber-900">
-                    You logged activity this week. Do a quick review so I can
-                    adjust your calories and workouts for next week.
+                    {hasTodayCheckinInReviewWeek
+                      ? "You logged activity this week, including today. Do a quick weekly review so I can adjust your calories and workouts for next week."
+                      : "Before we reset your plan for next week, complete today’s (Sunday) daily check-in. Once that’s logged, you can run your weekly review and get an updated plan."}
                   </p>
                 </div>
               </div>
@@ -559,7 +731,13 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={() => setIsWeeklyReviewOpen(true)}
-                className="inline-flex items-center justify-center rounded-full bg-blue-600 px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700"
+                disabled={!hasTodayCheckinInReviewWeek}
+                className={[
+                  "inline-flex items-center justify-center rounded-full px-5 py-2 text-xs font-semibold shadow-sm",
+                  hasTodayCheckinInReviewWeek
+                    ? "bg-blue-600 text-white hover:bg-blue-700"
+                    : "bg-slate-300 text-slate-600 cursor-not-allowed",
+                ].join(" ")}
               >
                 Start weekly review
               </button>
@@ -568,9 +746,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Main grid */}
       <div className="mx-auto grid max-w-6xl gap-6 px-4 py-6 md:grid-cols-[minmax(0,2fr)_minmax(0,1.2fr)] md:py-8">
-        {/* LEFT: Today */}
         <section className="space-y-6">
           <TodayPanel
             profile={profile}
@@ -595,6 +771,7 @@ export default function DashboardPage() {
           />
 
           <WorkoutPlanCard
+            profileId={profile.id}
             weekDaysInfo={weekDaysInfo}
             selectedDayName={selectedDayName}
             setSelectedDayName={setSelectedDayName}
@@ -602,13 +779,13 @@ export default function DashboardPage() {
             workoutDaysSet={workoutDaysSet}
           />
 
-          {/* Daily check-in trigger + backfill link */}
           <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-sm text-slate-600">
                 Log whether you worked out and hit your calories. This powers
                 your weekly review.
               </p>
+
               {canBackfill && (
                 <button
                   type="button"
@@ -631,6 +808,13 @@ export default function DashboardPage() {
                   Backfill a missed day this week
                 </button>
               )}
+
+              {disableTodayCheckinButton && (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  You’ve already completed this week’s review. New check-ins
+                  unlock tomorrow.
+                </p>
+              )}
             </div>
 
             <button
@@ -645,7 +829,13 @@ export default function DashboardPage() {
                 setWorkoutRating(null);
                 setCheckinNotes("");
               }}
-              className="rounded-full bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-700"
+              disabled={disableTodayCheckinButton}
+              className={[
+                "rounded-full px-4 py-1.5 text-xs font-semibold shadow-sm",
+                disableTodayCheckinButton
+                  ? "bg-slate-300 text-slate-600 cursor-not-allowed"
+                  : "bg-blue-600 text-white hover:bg-blue-700",
+              ].join(" ")}
             >
               Open today&apos;s check-in
             </button>
@@ -656,17 +846,18 @@ export default function DashboardPage() {
           )}
         </section>
 
-        {/* RIGHT: Week & Why */}
         <RightColumnPanel
           weeklySummary={weeklySummary}
           isGeneratingSummary={isGeneratingSummary}
           canGenerate={!!profile?.id}
           onGenerateWeeklySummary={handleGenerateWeeklySummary}
           profile={profile}
+          streakCount={streakCount}
+          workoutsCount={weekStats.daysWorkedOut}
+          calorieDaysCount={weekStats.daysHitCalories}
         />
       </div>
 
-      {/* Daily check-in modal (today or backfill) */}
       <DailyCheckinModal
         isOpen={isCheckinOpen}
         onClose={() => {
@@ -692,7 +883,6 @@ export default function DashboardPage() {
         onSave={handleSaveCheckin}
       />
 
-      {/* Weekly review modal */}
       <WeeklyReviewModal
         isOpen={isWeeklyReviewOpen}
         onClose={() => setIsWeeklyReviewOpen(false)}
@@ -708,6 +898,7 @@ export default function DashboardPage() {
         weeklyReviewLoading={weeklyReviewLoading}
         onSubmit={handleWeeklyReviewSubmit}
         shouldForceWeeklyReview={shouldForceWeeklyReview}
+        isEmptyWeekReview={!hasActivityInReviewWeek}
       />
     </main>
   );
