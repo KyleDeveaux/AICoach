@@ -292,7 +292,7 @@ export default function DashboardPage() {
           return;
         }
         if (!user) {
-          console.warn("No logged in user");
+          router.push("/login");
           return;
         }
 
@@ -497,31 +497,48 @@ export default function DashboardPage() {
 
     setWeeklyReviewLoading(true);
 
-    const payload = {
-      profileId: profile.id,
-      weekStart: reviewWeekStart,
-      form: {
-        weight_lbs: weeklyWeight ? Number(weeklyWeight) : null,
-        effort: weeklyEffort,
-        wentWell: weeklyWentWell.trim(),
-        gotInTheWay: weeklyGotInTheWay.trim(),
-      },
-    };
-
     try {
-      const res = await fetch("/api/weekly-review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      // ✅ Get the logged-in session token from Supabase (client-side)
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
 
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Failed to submit weekly review.");
+      if (sessionError) throw sessionError;
+
+      const accessToken = session?.access_token;
+      if (!accessToken) {
+        throw new Error("You are not logged in. Please log in again.");
       }
 
-      const data = await res.json();
+      // ✅ IMPORTANT: route no longer accepts profileId. It derives it from the logged-in user.
+      const payload = {
+        weekStart: reviewWeekStart,
+        form: {
+          weight_lbs: weeklyWeight ? Number(weeklyWeight) : null,
+          effort: weeklyEffort,
+          wentWell: weeklyWentWell.trim(),
+          gotInTheWay: weeklyGotInTheWay.trim(),
+        },
+      };
 
+      const res = await fetch("/api/weekly-review", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(payload),
+        credentials: "include",
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to submit weekly review.");
+      }
+
+      // ✅ Your route returns: { analysis, updatedCalorieTarget, updatedWorkoutSchedule }
       if (data.analysis) {
         setWeeklySummary(data.analysis as WeeklySummaryResponse);
       }
@@ -546,6 +563,7 @@ export default function DashboardPage() {
       setHasReviewForReviewWeek(true);
       setIsWeeklyReviewOpen(false);
 
+      // Reset form UI state
       setWeeklyWeight("");
       setWeeklyEffort(7);
       setWeeklyWentWell("");
@@ -625,29 +643,32 @@ export default function DashboardPage() {
     }
   }
 
-  async function handleGenerateWeeklySummary() {
-    if (!profile?.id) return;
-    setIsGeneratingSummary(true);
-    try {
-      const res = await fetch("/api/generate-weekly-summary", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profileId: profile.id }),
-      });
+async function handleGenerateWeeklySummary() {
+  setIsGeneratingSummary(true);
+  try {
+    const res = await fetch("/api/generate-weekly-summary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include", // ✅ ensure cookies always sent
+      body: JSON.stringify({}), // ✅ no profileId anymore
+    });
 
-      if (!res.ok) {
-        console.error("Failed to generate summary");
-        return;
-      }
+    const data = await res.json().catch(() => ({}));
 
-      const data = (await res.json()) as WeeklySummaryResponse;
-      setWeeklySummary(data);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsGeneratingSummary(false);
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to generate summary");
     }
+
+    setWeeklySummary(data as WeeklySummaryResponse);
+  } catch (err) {
+    console.error(err);
+  } finally {
+    setIsGeneratingSummary(false);
   }
+}
+
+
+
 
   const todayLabel = new Date().toLocaleDateString(undefined, {
     weekday: "long",

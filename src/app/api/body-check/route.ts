@@ -1,18 +1,9 @@
-// app/api/body-check/route.ts
+// src/app/api/body-check/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
+import { createSupabaseServerClient } from "@/app/lib/supabaseServer"; // <- your async helper
 
 export const runtime = "nodejs";
-
-// Server-side Supabase client (service role)
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  {
-    auth: { persistSession: false },
-  }
-);
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
@@ -37,60 +28,116 @@ function normalizeStringArray(value: unknown): string[] | undefined {
   return cleaned.length ? cleaned : undefined;
 }
 
+function pickContentType(file: File) {
+  const type = (file.type || "").toLowerCase();
+  if (type === "image/jpeg" || type === "image/jpg") return "image/jpeg";
+  if (type === "image/png") return "image/png";
+  if (type === "image/webp") return "image/webp";
+  return null;
+}
+
+function getTextFromResponsesAPI(response: any): string {
+  // Robust extraction: collect any output_text chunks across messages
+  try {
+    const chunks: string[] = [];
+
+    const outputs = response?.output ?? [];
+    for (const out of outputs) {
+      if (out?.type === "message") {
+        const content = out?.content ?? [];
+        for (const c of content) {
+          if (c?.type === "output_text" && typeof c?.text === "string") {
+            chunks.push(c.text);
+          }
+        }
+      }
+    }
+
+    return chunks.join("\n").trim();
+  } catch {
+    return "";
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const formData = await req.formData();
+    // ✅ RLS-enforced supabase client from cookies
+    const supabase = await createSupabaseServerClient();
 
-    const file = formData.get("photo");
-    const profileId = formData.get("profileId");
+    // ✅ Auth: must be logged in
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
 
-    if (!profileId || typeof profileId !== "string") {
-      return NextResponse.json(
-        { error: "Missing profileId in form data." },
-        { status: 400 }
-      );
+    if (userError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+
+    const formData = await req.formData();
+    const file = formData.get("photo");
 
     if (!(file instanceof File)) {
+      return NextResponse.json({ error: "Photo file is required." }, { status: 400 });
+    }
+
+    // ✅ validate type + size
+    const contentType = pickContentType(file);
+    if (!contentType) {
       return NextResponse.json(
-        { error: "Photo file is required." },
+        { error: "Unsupported image type. Use JPG, PNG, or WEBP." },
         { status: 400 }
       );
     }
 
-    // ----- 1) Read file bytes + upload image to Supabase storage -----
+    const MAX_BYTES = 8 * 1024 * 1024; // 8MB
+    if (file.size > MAX_BYTES) {
+      return NextResponse.json(
+        { error: "Image is too large. Please upload a file under 8MB." },
+        { status: 400 }
+      );
+    }
+
+    // ✅ Derive profile from logged-in user (no profileId from client)
+    const { data: profile, error: profileError } = await supabase
+      .from("client_profiles")
+      .select("id")
+      .eq("user_id", user.id)
+      .single();
+
+    if (profileError || !profile?.id) {
+      console.error("[body-check] Could not load profile:", profileError);
+      return NextResponse.json({ error: "Could not load profile" }, { status: 500 });
+    }
+
+    const profileId = profile.id as string;
+
+    // ----- 1) Upload image to Supabase Storage (RLS enforced) -----
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
 
-    const fileName = `body-check-${Date.now()}.jpg`;
-    const imagePath = fileName; // exact path used everywhere
+    // Put under user folder to make storage policies easier
+    const ext =
+      contentType === "image/png" ? "png" : contentType === "image/webp" ? "webp" : "jpg";
 
-    console.log("[body-check] Uploading to:", {
-      bucket: "body-checks",
-      imagePath,
-      contentType: file.type || "image/jpeg",
-    });
+    const imagePath = `${user.id}/body-check-${Date.now()}.jpg`;
 
-    const { error: uploadError } = await supabaseAdmin.storage
+    const { error: uploadError } = await supabase.storage
       .from("body-checks")
       .upload(imagePath, buffer, {
-        contentType: file.type || "image/jpeg",
+        contentType,
         upsert: false,
       });
 
     if (uploadError) {
-      console.error("Error uploading body-check image:", uploadError);
-      return NextResponse.json(
-        { error: "Failed to upload image." },
-        { status: 500 }
-      );
+      console.error("[body-check] Storage upload error:", uploadError);
+      return NextResponse.json({ error: "Failed to upload image." }, { status: 500 });
     }
 
     // ----- 2) Call vision model -----
     const base64Image = buffer.toString("base64");
-    const dataUrl = `data:${file.type || "image/jpeg"};base64,${base64Image}`;
+    const dataUrl = `data:${contentType};base64,${base64Image}`;
 
-    // ✅ Make it more coach-like (less robotic), but still STRICT JSON
     const systemPrompt = `
 You are CoachIE — a supportive, confident physique coach.
 
@@ -125,21 +172,11 @@ Rules:
       ],
     });
 
-    let rawText = "";
-    const firstOutput = response.output?.[0];
-    if (firstOutput?.type === "message") {
-      const firstContent = firstOutput.content?.[0];
-      if (firstContent?.type === "output_text") {
-        rawText = firstContent.text;
-      }
-    }
+    const rawText = getTextFromResponsesAPI(response);
 
     if (!rawText) {
-      console.error("No text output from vision model:", response);
-      return NextResponse.json(
-        { error: "No analysis returned from model." },
-        { status: 500 }
-      );
+      console.error("[body-check] No model text output:", response);
+      return NextResponse.json({ error: "No analysis returned from model." }, { status: 500 });
     }
 
     const cleaned = stripFences(rawText);
@@ -148,24 +185,16 @@ Rules:
     try {
       parsedUnknown = JSON.parse(cleaned);
     } catch (err) {
-      console.error("Failed to parse analysis JSON:", err, cleaned);
-      return NextResponse.json(
-        { error: "Model returned invalid JSON." },
-        { status: 500 }
-      );
+      console.error("[body-check] Invalid JSON from model:", err, cleaned);
+      return NextResponse.json({ error: "Model returned invalid JSON." }, { status: 500 });
     }
 
-    // ✅ Hard-validate shape so we never store garbage
+    // ✅ Hard-validate shape
     const parsedObj = parsedUnknown as Record<string, unknown>;
-
-    const summary =
-      typeof parsedObj.summary === "string" ? parsedObj.summary.trim() : "";
+    const summary = typeof parsedObj.summary === "string" ? parsedObj.summary.trim() : "";
 
     if (!summary) {
-      return NextResponse.json(
-        { error: "Model returned empty summary." },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Model returned empty summary." }, { status: 500 });
     }
 
     const focusAreas = normalizeStringArray(parsedObj.focusAreas);
@@ -174,58 +203,51 @@ Rules:
         ? parsedObj.updatedPlanNotes.trim()
         : undefined;
 
-    const parsed: BodyCheckAnalysis = {
+    const analysis: BodyCheckAnalysis = {
       summary,
       ...(focusAreas ? { focusAreas } : {}),
       ...(updatedPlanNotes ? { updatedPlanNotes } : {}),
     };
 
-    // ----- 3) Persist record in body_checks -----
     const nowIso = new Date().toISOString();
 
-    const { error: insertError } = await supabaseAdmin
-      .from("body_checks")
-      .insert({
-        profile_id: profileId,
-        image_path: imagePath,
-        summary: parsed.summary,
-        focus_areas: parsed.focusAreas ?? null,
-        plan_notes: parsed.updatedPlanNotes ?? null,
-        raw_analysis: parsed,
-        created_at: nowIso,
-      });
+    // ----- 3) Insert body_check record (RLS enforced) -----
+    const { error: insertError } = await supabase.from("body_checks").insert({
+      profile_id: profileId,
+      image_path: imagePath,
+      summary: analysis.summary,
+      focus_areas: analysis.focusAreas ?? null,
+      plan_notes: analysis.updatedPlanNotes ?? null,
+      raw_analysis: analysis, // jsonb
+      created_at: nowIso, // optional if DB defaults exist
+    });
 
     if (insertError) {
-      console.error("Error inserting body_checks row:", insertError);
-      // Still continue, since the user should still get the analysis response.
+      console.error("[body-check] Insert body_checks error:", insertError);
+      // don't block returning analysis to user
     }
 
-    // ✅ ----- 4) STEP 2: Update "active focus context" on the profile -----
-    // This is what lets weekly review keep generating workouts using the latest body-check focus.
-    const { error: focusUpdateError } = await supabaseAdmin
+    // ----- 4) Update active focus context on profile (RLS enforced) -----
+    const { error: focusUpdateError } = await supabase
       .from("client_profiles")
       .update({
-        active_focus_areas: parsed.focusAreas ?? null,
-        active_plan_notes: parsed.updatedPlanNotes ?? null,
+        active_focus_areas: analysis.focusAreas ?? null,
+        active_plan_notes: analysis.updatedPlanNotes ?? null,
         active_focus_updated_at: nowIso,
-        // active_focus_source: "body_check", // if you add this optional column
       })
       .eq("id", profileId);
 
     if (focusUpdateError) {
-      console.error(
-        "Error updating client_profiles active focus context:",
-        focusUpdateError
-      );
-      // Still return analysis; this should not break UX
+      console.error("[body-check] Update profile focus error:", focusUpdateError);
+      // still return analysis
     }
 
-    return NextResponse.json({ analysis: parsed });
+    return NextResponse.json({
+      analysis,
+      imagePath, // optional but useful for debugging/UI
+    });
   } catch (err) {
-    console.error("Error in /api/body-check:", err);
-    return NextResponse.json(
-      { error: "Failed to analyze photo." },
-      { status: 500 }
-    );
+    console.error("[body-check] Route error:", err);
+    return NextResponse.json({ error: "Failed to analyze photo." }, { status: 500 });
   }
 }
