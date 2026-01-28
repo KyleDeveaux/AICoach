@@ -1,28 +1,37 @@
+// src/app/api/generate-weekly-summary/route.ts
 import { NextResponse } from "next/server";
 import { openai } from "../../lib/openai";
-import { supabaseAdmin } from "../../lib/supabaseAdmin";
 import type {
   ClientProfile,
   DailyCheckinRow,
   WeeklySummaryResponse,
 } from "../../lib/types";
+import { createSupabaseServerClient } from "@/app/lib/supabaseServer";
+
+export const runtime = "nodejs";
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const profileId = body.profileId as string | undefined;
+    // ✅ Server client that reads Supabase auth cookies correctly
+    const supabase = await createSupabaseServerClient();
 
-    if (!profileId) {
-      return NextResponse.json(
-        { error: "Missing profileId in request body" },
-        { status: 400 }
-      );
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    // 1) Load client profile
-    const { data: profile, error: profileError } = await supabaseAdmin
+
+    // body is optional (kept in case you later want to filter by weekStart)
+    await req.json().catch(() => ({}));
+
+    // ✅ Derive profile from logged-in user (no profileId from client)
+    const { data: profile, error: profileError } = await supabase
       .from("client_profiles")
       .select("*")
-      .eq("id", profileId)
+      .eq("user_id", user.id)
       .single();
 
     if (profileError || !profile) {
@@ -34,9 +43,10 @@ export async function POST(req: Request) {
     }
 
     const clientProfile = profile as ClientProfile;
+    const profileId = (profile as any).id as string;
 
-    // 2) Load recent daily check-ins (last 14 days, ordered newest → oldest)
-    const { data: checkins, error: checkinsError } = await supabaseAdmin
+    // ✅ Load recent daily check-ins (RLS enforced)
+    const { data: checkins, error: checkinsError } = await supabase
       .from("daily_checkins")
       .select("*")
       .eq("profile_id", profileId)
@@ -89,33 +99,25 @@ export async function POST(req: Request) {
       "- Point out patterns (e.g., weekends harder, certain days always missed).",
       "- Suggest 2–4 very practical focus points for the coming week.",
       "- Give a short accountability message that feels like you're talking directly to them.",
-      "- Use their goal_why to remind them why they started, especially if adherence has been low.",
-      "- Acknowledge their past_struggles when relevant, and show them how this week connects to those patterns without shaming them.",
+      "- Use their goal_why to remind them why they started (if available).",
+      "- Acknowledge their past_struggles when relevant (no shame).",
       "",
-      "IMPORTANT TONE RULES:",
-      "- Always be supportive and human. No shaming, no guilt-tripping.",
-      "- In weeks with low adherence (few workouts, few days hitting calories),",
-      "  focus primarily on habits, structure, and their 'why', not on changing calories.",
-      "- Speak to them like a long-term coach who believes in them.",
-      "",
-      "CALORIE ADJUSTMENT LOGIC (GUIDELINES):",
-      "- If adherence has been poor or inconsistent, recommend 'keep' and focus on behavior.",
-      "- Only consider 'lower_slightly' when adherence is solid AND weight hasn't changed much.",
-      "- Do NOT invent a brand new precise calorie number.",
+      "IMPORTANT:",
+      "- Be supportive. No shaming.",
+      "- In low-adherence weeks, focus on habits/structure (don’t push calorie changes).",
       "",
       "OUTPUT FORMAT:",
       "Return ONLY valid JSON with:",
       "- summary (string).",
-      "- adherence (object) – these stats must match the adherence object you were given.",
+      "- adherence (object) – MUST match the adherence object you were given.",
       "- nextWeekFocus (array of 2–5 short strings).",
       "- suggestions (array of 2–5 short, concrete action steps).",
-      "- accountabilityMessage (string): this MUST weave in their goal_why if available,",
-      "  especially after a rough week.",
+      "- accountabilityMessage (string).",
       "- calorieAdjustment (object):",
       "    - recommendation: 'keep' | 'lower_slightly' | 'raise_slightly'.",
-      "    - explanation: short string explaining your choice.",
+      "    - explanation: short string.",
       "",
-      "Return ONLY JSON. No extra commentary.",
+      "Return ONLY JSON.",
     ].join("\n");
 
     const userContent = {
@@ -142,7 +144,6 @@ export async function POST(req: Request) {
     const raw = completion.choices[0]?.message?.content;
 
     if (!raw) {
-      console.error("OpenAI returned no content:", completion);
       return NextResponse.json(
         { error: "No content returned from OpenAI" },
         { status: 500 }
@@ -164,10 +165,9 @@ export async function POST(req: Request) {
       );
     }
 
-    // ✅ Our final object: LLM’s narrative + our exact adherence metrics
     const result: WeeklySummaryResponse = {
       ...parsedNoAdherence,
-      adherence, // this overwrites anything the model might have said
+      adherence, // ✅ force exact adherence numbers
     };
 
     return NextResponse.json(result);

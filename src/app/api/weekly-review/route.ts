@@ -5,16 +5,17 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { persistSession: false } }
-);
-
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
 function stripFences(text: string) {
-  return text.replace(/```json/gi, "").replace(/```/g, "").trim();
+  return text
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+}
+
+function isIsoDate(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
 function getWeekRangeFromWeekStart(weekStart: string) {
@@ -32,7 +33,10 @@ function defaultDaysForCount(count: number): string[] {
   return ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 }
 
-function extractPreferredDaysFromExisting(existing: unknown, desiredDays: number) {
+function extractPreferredDaysFromExisting(
+  existing: unknown,
+  desiredDays: number
+) {
   const schedule = Array.isArray(existing) ? (existing as any[]) : [];
   const days = schedule
     .map((x) => (typeof x?.dayOfWeek === "string" ? x.dayOfWeek : null))
@@ -67,14 +71,13 @@ function normalizeExercises(input: unknown): Exercise[] {
   if (!Array.isArray(input)) return [];
   const out: Exercise[] = [];
 
-  for (const raw of input) {
+  for (const raw of input as any[]) {
     const name = typeof raw?.name === "string" ? raw.name.trim() : "";
     if (!name) continue;
 
     const reps = clamp(Number(raw?.reps ?? 10), 1, 30);
     const sets = clamp(Number(raw?.sets ?? 3), 1, 10);
     const rest = clamp(Number(raw?.rest_seconds ?? 60), 30, 240);
-
     const notes = typeof raw?.notes === "string" ? raw.notes.trim() : null;
 
     const gifSearchTerm =
@@ -125,17 +128,16 @@ function sanitizeScheduleShape(
 
   if (mapped.length === 0) return null;
 
-  let clamped = mapped.slice(0, desiredDays);
+  let clampedDays = mapped.slice(0, desiredDays);
 
-  // pad if short using existing schedule
-  if (clamped.length < desiredDays) {
+  if (clampedDays.length < desiredDays) {
     const fb = fallbackExisting ?? [];
-    while (clamped.length < desiredDays) {
-      const idx = clamped.length;
+    while (clampedDays.length < desiredDays) {
+      const idx = clampedDays.length;
       const pick = fb[idx] ?? fb[fb.length - 1];
-      if (pick) clamped.push(pick);
+      if (pick) clampedDays.push(pick);
       else {
-        clamped.push({
+        clampedDays.push({
           dayOfWeek: "",
           workoutName: `Workout ${idx + 1}`,
           exercises: [
@@ -154,13 +156,12 @@ function sanitizeScheduleShape(
     }
   }
 
-  // force exact day order
-  clamped = clamped.map((d, i) => ({
+  clampedDays = clampedDays.map((d, i) => ({
     ...d,
     dayOfWeek: preferredDays[i] ?? d.dayOfWeek ?? `Day ${i + 1}`,
   }));
 
-  return clamped;
+  return clampedDays;
 }
 
 function deepEqualSchedule(a: unknown, b: unknown) {
@@ -171,7 +172,6 @@ function deepEqualSchedule(a: unknown, b: unknown) {
   }
 }
 
-// If model returns identical plan, apply a tiny progression so user can confirm it changed.
 function applyProgressionNudge(schedule: WorkoutDay[]) {
   return schedule.map((day) => {
     const exercises = [...day.exercises];
@@ -191,10 +191,7 @@ function applyProgressionNudge(schedule: WorkoutDay[]) {
 /** ---------- CALORIE ENGINE (deterministic) ---------- */
 
 type CalorieRecommendation = "keep" | "lower_slightly" | "raise_slightly";
-
-function lbsFromKg(kg: number) {
-  return kg * 2.2046226218;
-}
+type WeightPoint = { week_start: string; weight_lbs: number };
 
 function daysBetween(a: Date, b: Date) {
   const ms = Math.abs(a.getTime() - b.getTime());
@@ -205,18 +202,27 @@ function getMinCaloriesByGender(gender: unknown) {
   const g = typeof gender === "string" ? gender.toLowerCase() : "";
   if (g.includes("female") || g === "f") return 1200;
   if (g.includes("male") || g === "m") return 1400;
-  return 1300; // unknown/other
+  return 1300;
 }
 
 function inferGoalType(profile: any): "cut" | "gain" | "maintain" {
-  const goalType = typeof profile?.goal_type === "string" ? profile.goal_type.toLowerCase() : "";
-  if (goalType.includes("lose") || goalType.includes("cut") || goalType.includes("fat")) return "cut";
+  const goalType =
+    typeof profile?.goal_type === "string"
+      ? profile.goal_type.toLowerCase()
+      : "";
+  if (
+    goalType.includes("lose") ||
+    goalType.includes("cut") ||
+    goalType.includes("fat")
+  )
+    return "cut";
   if (goalType.includes("gain") || goalType.includes("bulk")) return "gain";
   if (goalType.includes("maint")) return "maintain";
 
-  // fallback: compare goal weight
-  const goalKg = typeof profile?.goal_weight_kg === "number" ? profile.goal_weight_kg : null;
-  const currentKg = typeof profile?.weight_kg === "number" ? profile.weight_kg : null;
+  const goalKg =
+    typeof profile?.goal_weight_kg === "number" ? profile.goal_weight_kg : null;
+  const currentKg =
+    typeof profile?.weight_kg === "number" ? profile.weight_kg : null;
 
   if (goalKg != null && currentKg != null) {
     if (goalKg < currentKg) return "cut";
@@ -225,26 +231,39 @@ function inferGoalType(profile: any): "cut" | "gain" | "maintain" {
   return "maintain";
 }
 
-type WeightPoint = { week_start: string; weight_lbs: number };
-
 function computeWeeklyDeltaPct(latest: number, prev: number) {
-  // negative = losing weight
   return ((latest - prev) / prev) * 100;
 }
 
 function chooseCalorieAdjustment(params: {
   profile: any;
   currentTarget: number | null;
-  adherence: { totalDays: number; daysHitCalories: number; daysWorkedOut: number };
+  adherence: {
+    totalDays: number;
+    daysHitCalories: number;
+    daysWorkedOut: number;
+  };
   weightHistory: WeightPoint[]; // newest -> older
   submittedWeightLbs: number | null;
 }) {
-  const { profile, currentTarget, adherence, weightHistory, submittedWeightLbs } = params;
+  const {
+    profile,
+    currentTarget,
+    adherence,
+    weightHistory,
+    submittedWeightLbs,
+  } = params;
 
   const goal = inferGoalType(profile);
-  const minCalories = getMinCaloriesByGender(profile?.gender);
 
-  // If no current target, we do nothing (your system likely sets this earlier anyway)
+  // ✅ Stronger floor: you can tune these numbers
+  const genderFloor = getMinCaloriesByGender(profile?.gender);
+  const hardFloor = Math.max(
+    genderFloor,
+    1400 // universal safety floor (tune: 1400–1600 depending on your philosophy)
+  );
+
+  // If no current target, do nothing
   if (!currentTarget) {
     return {
       recommendation: "keep" as CalorieRecommendation,
@@ -255,41 +274,49 @@ function chooseCalorieAdjustment(params: {
     };
   }
 
-  // Adherence gate: don’t adjust if they didn’t track enough
+  // Adherence gate
   if (adherence.totalDays < 3) {
     return {
       recommendation: "keep" as CalorieRecommendation,
       delta: 0,
       proposedTarget: currentTarget,
-      reason: "Not enough check-ins this week to adjust calories confidently. Focus on consistency first.",
+      reason:
+        "Not enough check-ins this week to adjust calories confidently. Focus on consistency first.",
       trendDeltaPct: null as number | null,
     };
   }
 
   // Cooldown gate (14 days)
-  const lastAdj = profile?.last_calorie_adjustment_at ? new Date(profile.last_calorie_adjustment_at) : null;
+  const lastAdj = profile?.last_calorie_adjustment_at
+    ? new Date(profile.last_calorie_adjustment_at)
+    : null;
   if (lastAdj && daysBetween(new Date(), lastAdj) < 14) {
     return {
       recommendation: "keep" as CalorieRecommendation,
       delta: 0,
       proposedTarget: currentTarget,
-      reason: "Calories were adjusted recently; holding steady for 14 days to let the change work.",
+      reason:
+        "Calories were adjusted recently; holding steady for 14 days to let the change work.",
       trendDeltaPct: null as number | null,
     };
   }
 
-  // If the user didn’t submit weight this week, don’t adjust (avoids random changes)
+  // Need weigh-in to adjust
   if (!submittedWeightLbs) {
     return {
       recommendation: "keep" as CalorieRecommendation,
       delta: 0,
       proposedTarget: currentTarget,
-      reason: "No weigh-in submitted for this review, so calories remain unchanged.",
+      reason:
+        "No weigh-in submitted for this review, so calories remain unchanged.",
       trendDeltaPct: null as number | null,
     };
   }
 
-  // Build a trend window: latest weight (this submission) + last 2 historical weekly weights if available
+  // Build trend window:
+  // weights[0] = this week (submitted)
+  // weights[1] = last week
+  // weights[2] = two weeks ago
   const weights: number[] = [submittedWeightLbs];
   for (const wp of weightHistory) {
     if (typeof wp.weight_lbs === "number" && Number.isFinite(wp.weight_lbs)) {
@@ -298,85 +325,123 @@ function chooseCalorieAdjustment(params: {
     if (weights.length >= 3) break;
   }
 
-  // Need at least 2 points for a trend
-  if (weights.length < 2) {
-    return {
-      recommendation: "keep" as CalorieRecommendation,
-      delta: 0,
-      proposedTarget: currentTarget,
-      reason: "Need at least two weeks of weigh-ins before adjusting calories.",
-      trendDeltaPct: null as number | null,
-    };
-  }
+  // ✅ Require 3 points before ever LOWERING calories
+  // (prevents reacting to one week of scale noise)
+  const hasTwoWeekTrend = weights.length >= 3;
 
-  const delta1 = computeWeeklyDeltaPct(weights[0], weights[1]); // latest vs previous (percent)
-  const delta2 = weights.length >= 3 ? computeWeeklyDeltaPct(weights[1], weights[2]) : null;
+  const delta1 = computeWeeklyDeltaPct(weights[0], weights[1]); // this vs last
+  const delta2 = hasTwoWeekTrend
+    ? computeWeeklyDeltaPct(weights[1], weights[2])
+    : null;
 
-  const adherenceGood = adherence.daysHitCalories >= 4; // simple + effective
+  const adherenceGood = adherence.daysHitCalories >= 4;
 
-  // For now we only auto-adjust aggressively for CUT goals.
-  // (Maintain/recomp/gain: conservative changes only)
-  const isCut = goal === "cut";
+  // Noise + stall logic:
+  const NOISE_BAND = 0.4; // +/- 0.4% is “scale noise”
+  const STALL_LOW = -0.25;
+  const STALL_HIGH = +0.25;
+
+  const isNoise1 = Math.abs(delta1) <= NOISE_BAND;
+  const isNoise2 = delta2 != null ? Math.abs(delta2) <= NOISE_BAND : false;
+
+  const isStall1 = delta1 >= STALL_LOW && delta1 <= STALL_HIGH;
+  const isStall2 =
+    delta2 != null ? delta2 >= STALL_LOW && delta2 <= STALL_HIGH : false;
+
+  const isUp1 = delta1 > NOISE_BAND;
+  const isUp2 = delta2 != null ? delta2 > NOISE_BAND : false;
+
+  const isFastLoss = delta1 < -1.0;
+
+  // Adjustment sizes (tune)
+  const CUT_DOWN = -150;
+  const CUT_UP = +150;
 
   let rec: CalorieRecommendation = "keep";
   let delta = 0;
   let reason = "Keeping calories steady.";
 
+  // ✅ Only auto-adjust aggressively for CUT
+  const isCut = goal === "cut";
+
   if (!isCut) {
-    // conservative: only adjust if clearly drifting AND adherence is good
-    if (adherenceGood && delta1 > 0.25) {
-      rec = "lower_slightly";
-      delta = -150;
-      reason = "Weight is trending upward; small reduction to bring you back toward your target.";
-    } else if (adherenceGood && delta1 < -1.0) {
+    // Conservative for non-cut goals
+    if (adherenceGood && isFastLoss) {
       rec = "raise_slightly";
-      delta = +150;
-      reason = "Loss is very fast; small increase to support recovery and adherence.";
+      delta = CUT_UP;
+      reason =
+        "Loss is very fast; small increase to support recovery and adherence.";
     } else {
       rec = "keep";
       delta = 0;
-      reason = "Stable trend for your current goal; keeping calories unchanged.";
+      reason =
+        "Stable trend for your current goal; keeping calories unchanged.";
     }
   } else {
-    // CUT logic
+    // CUT goal rules
     if (!adherenceGood) {
       rec = "keep";
       delta = 0;
-      reason = "Calories unchanged because adherence wasn’t strong enough—let’s improve consistency before adjusting.";
-    } else if (delta1 < -1.0) {
+      reason =
+        "Calories unchanged because adherence wasn’t strong enough—improve consistency before adjusting.";
+    } else if (isFastLoss) {
       rec = "raise_slightly";
-      delta = +150;
-      reason = "You’re losing faster than ~1%/week—slightly raising calories to protect performance and recovery.";
-    } else if (delta1 <= -0.5 && delta1 >= -1.0) {
-      rec = "keep";
-      delta = 0;
-      reason = "Great rate of loss (~0.5–1%/week). Keep calories the same.";
+      delta = CUT_UP;
+      reason =
+        "You’re losing faster than ~1%/week—slightly raising calories to protect performance and recovery.";
     } else {
-      // potential stall zone (0% to -0.25%) for 2 straight weeks
-      const inStallBand1 = delta1 <= 0 && delta1 >= -0.25;
-      const inStallBand2 = delta2 != null ? delta2 <= 0 && delta2 >= -0.25 : false;
-
-      if (inStallBand1 && inStallBand2) {
-        rec = "lower_slightly";
-        delta = -150;
-        reason = "Weight trend suggests a stall for ~2 weeks with good adherence—small calorie reduction to restart progress.";
-      } else if (delta1 > 0.25) {
-        rec = "lower_slightly";
-        delta = -150;
-        reason = "Weight is trending up despite good adherence—small calorie reduction to re-establish a deficit.";
-      } else {
+      // ✅ LOWER only if we have a 2-week confirmation
+      if (!hasTwoWeekTrend) {
         rec = "keep";
         delta = 0;
-        reason = "Trend is a bit noisy—holding calories steady and reassessing next week.";
+        reason =
+          "Need at least two weeks of weigh-in trend before lowering calories (avoids reacting to scale noise).";
+      } else {
+        // Two-week confirmation rules:
+        // 1) two-week stall with good adherence
+        const confirmedStall = isStall1 && isStall2;
+
+        // 2) two-week upward drift with good adherence
+        const confirmedUp = isUp1 && isUp2;
+
+        if (confirmedStall) {
+          rec = "lower_slightly";
+          delta = CUT_DOWN;
+          reason =
+            "Two-week stall with good adherence—small calorie reduction to restart progress.";
+        } else if (confirmedUp) {
+          rec = "lower_slightly";
+          delta = CUT_DOWN;
+          reason =
+            "Two consecutive weeks trending upward with good adherence—small reduction to re-establish a deficit.";
+        } else {
+          // If week-to-week is mixed/noisy, hold steady
+          rec = "keep";
+          delta = 0;
+          reason =
+            "Trend looks noisy or inconsistent—holding calories steady and reassessing next week.";
+        }
       }
     }
   }
 
-  const proposed = clamp(currentTarget + delta, minCalories, 10000);
+  // ✅ Apply floor clamp + don’t reduce below floor
+  const proposed = clamp(currentTarget + delta, hardFloor, 10000);
+
+  // If floor blocks a reduction, just keep
+  if (delta < 0 && proposed === currentTarget) {
+    return {
+      recommendation: "keep" as CalorieRecommendation,
+      delta: 0,
+      proposedTarget: currentTarget,
+      reason: `Calorie floor reached (${hardFloor}). Keeping calories steady.`,
+      trendDeltaPct: delta1,
+    };
+  }
 
   return {
     recommendation: rec,
-    delta,
+    delta: proposed - currentTarget,
     proposedTarget: proposed,
     reason,
     trendDeltaPct: delta1,
@@ -387,13 +452,41 @@ function chooseCalorieAdjustment(params: {
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
+    const authHeader = req.headers.get("authorization") || "";
+    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+    if (!token) {
+      return NextResponse.json(
+        { error: "Unauthorized (missing token)" },
+        { status: 401 }
+      );
+    }
+
+    // ✅ user-scoped supabase client (RLS enforced) using the token
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        auth: { persistSession: false, autoRefreshToken: false },
+        global: {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      }
+    );
+
     const {
-      profileId,
-      weekStart,
-      form,
-    }: {
-      profileId?: string;
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser(token);
+
+    if (userError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const { weekStart, form } = body as {
       weekStart?: string;
       form?: {
         weight_lbs: number | null;
@@ -401,36 +494,45 @@ export async function POST(req: Request) {
         wentWell: string;
         gotInTheWay: string;
       };
-    } = body;
+    };
 
-    if (!profileId || !weekStart || !form) {
+    if (!weekStart || !form || !isIsoDate(weekStart)) {
       return NextResponse.json(
-        { error: "Missing profileId, weekStart, or form" },
+        { error: "Missing or invalid weekStart / form" },
         { status: 400 }
       );
     }
 
+    // ✅ derive profile from user.id (RLS must allow this select)
+    const { data: profile, error: profileError } = await supabase
+      .from("client_profiles")
+      .select("*")
+      .eq("user_id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      console.error("Profile load failed:", profileError);
+      return NextResponse.json(
+        { error: "Could not load profile" },
+        { status: 500 }
+      );
+    }
+
+    const profileId = profile.id as string;
     const { start: rangeStart, end: rangeEnd } =
       getWeekRangeFromWeekStart(weekStart);
 
     const [
-      { data: profile, error: profileError },
       { data: checkins, error: checkinsError },
       { data: weightRows, error: weightsError },
     ] = await Promise.all([
-      supabaseAdmin
-        .from("client_profiles")
-        .select("*")
-        .eq("id", profileId)
-        .single(),
-      supabaseAdmin
+      supabase
         .from("daily_checkins")
         .select("did_workout, hit_calorie_goal, workout_rating, checkin_date")
         .eq("profile_id", profileId)
         .gte("checkin_date", rangeStart)
         .lte("checkin_date", rangeEnd),
-      // pull last weekly weigh-ins (excluding this submission; we’ll add it in engine)
-      supabaseAdmin
+      supabase
         .from("weekly_reviews")
         .select("week_start, weight_lbs")
         .eq("profile_id", profileId)
@@ -439,23 +541,16 @@ export async function POST(req: Request) {
         .limit(6),
     ]);
 
-    if (profileError || !profile) {
-      console.error("Error loading profile:", profileError);
-      return NextResponse.json({ error: "Could not load profile" }, { status: 500 });
-    }
-
     if (checkinsError) {
-      console.error("Error loading checkins:", checkinsError);
-      return NextResponse.json({ error: "Could not load check-ins" }, { status: 500 });
+      console.error("Checkins load failed:", checkinsError);
+      return NextResponse.json(
+        { error: "Could not load check-ins" },
+        { status: 500 }
+      );
     }
-
-    if (weightsError) {
-      console.error("Error loading weekly weights:", weightsError);
-      // Not fatal; we can still continue with no adjustment
-    }
+    if (weightsError) console.error("Weights load warning:", weightsError);
 
     const safeCheckins = checkins ?? [];
-
     const adherence = {
       totalDays: safeCheckins.length,
       daysWorkedOut: safeCheckins.filter((c) => !!c.did_workout).length,
@@ -463,13 +558,13 @@ export async function POST(req: Request) {
     };
 
     const realisticDays = clamp(
-      Number((profile as any).realistic_workouts_per_week ?? 3),
+      Number(profile.realistic_workouts_per_week ?? 3),
       1,
       5
     );
 
-    const existingSchedule = Array.isArray((profile as any).weekly_workout_schedule)
-      ? ((profile as any).weekly_workout_schedule as WorkoutDay[])
+    const existingSchedule = Array.isArray(profile.weekly_workout_schedule)
+      ? (profile.weekly_workout_schedule as WorkoutDay[])
       : null;
 
     const preferredDays = extractPreferredDaysFromExisting(
@@ -486,9 +581,8 @@ export async function POST(req: Request) {
         ? ((profile as any).active_plan_notes as string)
         : null;
 
-    // ---- CALORIE ENGINE DECISION (deterministic) ----
     const currentTarget: number | null =
-      ((profile as any).calorie_target as number | null) ?? null;
+      (profile.calorie_target as number | null) ?? null;
 
     const weightHistory: WeightPoint[] = Array.isArray(weightRows)
       ? (weightRows as any[])
@@ -503,15 +597,17 @@ export async function POST(req: Request) {
       profile,
       currentTarget,
       adherence,
-      weightHistory, // newest -> older
+      weightHistory,
       submittedWeightLbs: form.weight_lbs ?? null,
     });
 
     let finalCalorieTarget = currentTarget;
 
-    if (engine.recommendation !== "keep" && typeof engine.proposedTarget === "number") {
-      // apply update
-      const { data: updatedProfile, error: updateError } = await supabaseAdmin
+    if (
+      engine.recommendation !== "keep" &&
+      typeof engine.proposedTarget === "number"
+    ) {
+      const { data: updatedProfile, error: updateError } = await supabase
         .from("client_profiles")
         .update({
           calorie_target: engine.proposedTarget,
@@ -524,16 +620,10 @@ export async function POST(req: Request) {
         .select("calorie_target")
         .single();
 
-      if (updateError) {
-        console.error("Error updating calorie_target:", updateError);
-      } else if (updatedProfile) {
+      if (updateError) console.error("Calorie update failed:", updateError);
+      else if (updatedProfile)
         finalCalorieTarget = updatedProfile.calorie_target as number;
-      }
     }
-
-    console.log("[weekly-review] activeFocusAreas:", activeFocusAreas);
-    console.log("[weekly-review] preferredDays:", preferredDays);
-    console.log("[weekly-review] calorie engine:", engine);
 
     const systemPrompt = `
 You are CoachIE — supportive, confident, and practical.
@@ -586,14 +676,14 @@ HARD RULES:
 
     const userPayload = {
       profile: {
-        id: (profile as any).id,
-        age: (profile as any).age,
-        gender: (profile as any).gender,
-        height_cm: (profile as any).height_cm,
-        weight_kg: (profile as any).weight_kg,
-        goal_type: (profile as any).goal_type,
-        goal_weight_kg: (profile as any).goal_weight_kg,
-        equipment: (profile as any).equipment,
+        id: profileId,
+        age: profile.age,
+        gender: profile.gender,
+        height_cm: profile.height_cm,
+        weight_kg: profile.weight_kg,
+        goal_type: profile.goal_type,
+        goal_weight_kg: profile.goal_weight_kg,
+        equipment: profile.equipment,
         realistic_workouts_per_week: realisticDays,
       },
       adherence,
@@ -605,8 +695,6 @@ HARD RULES:
         updatedAt: (profile as any).active_focus_updated_at ?? null,
       },
       requiredDayOrder: preferredDays,
-
-      // ✅ engine decision – model must echo recommendation and explain it
       calorieEngineDecision: {
         recommendation: engine.recommendation,
         delta: engine.delta,
@@ -616,7 +704,7 @@ HARD RULES:
       },
     };
 
-    const response = await openai.responses.create({
+    const ai = await openai.responses.create({
       model: "gpt-4.1-mini",
       input: [
         { role: "system", content: systemPrompt },
@@ -624,7 +712,7 @@ HARD RULES:
       ],
     });
 
-    const firstOutput = (response.output?.[0] as any) ?? null;
+    const firstOutput = (ai.output?.[0] as any) ?? null;
     const firstContent = firstOutput?.content?.[0] as
       | { type: string; text?: string }
       | undefined;
@@ -638,33 +726,39 @@ HARD RULES:
     try {
       analysis = JSON.parse(stripFences(rawText));
     } catch (err) {
-      console.error("Failed to parse LLM JSON:", err, rawText);
-      return NextResponse.json({ error: "Could not parse AI response" }, { status: 500 });
+      console.error("AI JSON parse failed:", err, rawText);
+      return NextResponse.json(
+        { error: "Could not parse AI response" },
+        { status: 500 }
+      );
     }
 
-    // ✅ Force calorieAdjustment recommendation to engine decision (no drift)
     if (!analysis?.calorieAdjustment) analysis.calorieAdjustment = {};
     analysis.calorieAdjustment.recommendation = engine.recommendation;
 
-    // ✅ Workout schedule generation + sanitize + enforce day order
     const modelSchedule = analysis?.workoutPlan?.weeklyWorkoutSchedule;
 
     let updatedWorkoutSchedule =
-      sanitizeScheduleShape(modelSchedule, realisticDays, preferredDays, existingSchedule) ??
+      sanitizeScheduleShape(
+        modelSchedule,
+        realisticDays,
+        preferredDays,
+        existingSchedule
+      ) ??
       existingSchedule ??
       null;
 
-    // If identical to existing, apply a small progression nudge
-    if (existingSchedule && updatedWorkoutSchedule && deepEqualSchedule(updatedWorkoutSchedule, existingSchedule)) {
-      console.warn("[weekly-review] Model returned identical schedule. Applying progression nudge.");
+    if (
+      existingSchedule &&
+      updatedWorkoutSchedule &&
+      deepEqualSchedule(updatedWorkoutSchedule, existingSchedule)
+    ) {
       updatedWorkoutSchedule = applyProgressionNudge(updatedWorkoutSchedule);
     }
 
-    // Persist schedule & split
     if (updatedWorkoutSchedule) {
       const workoutSplit = updatedWorkoutSchedule.map((d) => d.workoutName);
-
-      const { error: wsError } = await supabaseAdmin
+      const { error: wsError } = await supabase
         .from("client_profiles")
         .update({
           weekly_workout_schedule: updatedWorkoutSchedule,
@@ -672,24 +766,25 @@ HARD RULES:
         })
         .eq("id", profileId);
 
-      if (wsError) console.error("Error updating weekly_workout_schedule:", wsError);
+      if (wsError) console.error("Workout schedule update failed:", wsError);
     }
 
-    // Save weekly review row
-    const { error: insertError } = await supabaseAdmin.from("weekly_reviews").insert({
-      id: crypto.randomUUID(),
-      profile_id: profileId,
-      week_start: weekStart,
-      weight_lbs: form.weight_lbs ?? null,
-      effort: form.effort,
-      went_well: form.wentWell,
-      got_in_the_way: form.gotInTheWay,
-      analysis,
-      new_calorie_target: finalCalorieTarget,
-    });
+    const { error: insertError } = await supabase
+      .from("weekly_reviews")
+      .insert({
+        id: crypto.randomUUID(),
+        profile_id: profileId,
+        week_start: weekStart,
+        weight_lbs: form.weight_lbs ?? null,
+        effort: form.effort,
+        went_well: form.wentWell,
+        got_in_the_way: form.gotInTheWay,
+        analysis,
+        new_calorie_target: finalCalorieTarget,
+      });
 
     if (insertError) {
-      console.error("Error inserting weekly review:", insertError);
+      console.error("Weekly review insert failed:", insertError);
       return NextResponse.json(
         { error: insertError.message || "Failed to save weekly review" },
         { status: 500 }
@@ -700,15 +795,17 @@ HARD RULES:
       analysis,
       updatedCalorieTarget: finalCalorieTarget,
       updatedWorkoutSchedule,
-      calorieEngine: engine, // helpful for debugging (remove later if you want)
-      usedActiveFocus: {
-        focusAreas: activeFocusAreas,
-        planNotes: activePlanNotes,
-        updatedAt: (profile as any).active_focus_updated_at ?? null,
-      },
     });
   } catch (err) {
-    console.error("Weekly review route error:", err);
-    return NextResponse.json({ error: "Unexpected server error" }, { status: 500 });
+    console.error("Weekly review route crash:", err);
+    return NextResponse.json(
+      {
+        error:
+          process.env.NODE_ENV === "production"
+            ? "Unexpected server error"
+            : String(err),
+      },
+      { status: 500 }
+    );
   }
 }
