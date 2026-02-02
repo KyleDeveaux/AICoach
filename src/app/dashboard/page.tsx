@@ -24,10 +24,16 @@ import {
 
 import DailyCheckinModal from "./DailyCheckinModal";
 import WeeklyReviewModal from "./WeeklyReviewModal";
-import TodayPanel from "./TodayPanel";
-import WorkoutPlanCard from "./WorkoutPlanCard";
-import RightColumnPanel from "./RightColumnPanel";
 import DashboardNav from "./DashboardNav";
+import GreetingHeader from "./GreetingHeader";
+import TodaysScoreCard from "./TodaysScoreCard";
+import YourNextStepCard from "./YourNextStepCard";
+import DailyCheckinCard from "./DailyCheckinCard";
+import NutritionSummaryCard from "./NutritionSummaryCard";
+import TodaysWorkoutCard from "./TodaysWorkoutCard";
+import BodyCheckCard from "./BodyCheckCard";
+import CoachingCard from "./CoachingCard";
+import WeeklyInsightsBar from "./WeeklyInsightsBar";
 
 type WeekDayInfo = {
   dayName: string;
@@ -93,6 +99,11 @@ export default function DashboardPage() {
   const [checkinMessage, setCheckinMessage] = useState<string | null>(null);
   const [streakCount, setStreakCount] = useState<number>(0);
 
+  // Persisted today's check-in values (survive form reset)
+  const [savedTodayWorkout, setSavedTodayWorkout] = useState<boolean | null>(null);
+  const [savedTodayCalories, setSavedTodayCalories] = useState<boolean | null>(null);
+
+
   const [weekStats, setWeekStats] = useState<WeekStats>({
     totalCheckins: 0,
     daysWorkedOut: 0,
@@ -131,6 +142,10 @@ export default function DashboardPage() {
   const [mealError, setMealError] = useState<string | null>(null);
   const [mealSaving, setMealSaving] = useState(false);
   const [mealDeletingId, setMealDeletingId] = useState<string | null>(null);
+
+  // BODY CHECK STATE
+  const [latestBodyCheckUrl, setLatestBodyCheckUrl] = useState<string | null>(null);
+  const [lastBodyCheckDate, setLastBodyCheckDate] = useState<string | null>(null);
 
   // WORKOUT CALENDAR: selected day of the week (for viewing plan only)
   const [selectedDayName, setSelectedDayName] = useState<string>(() =>
@@ -262,9 +277,16 @@ export default function DashboardPage() {
         .filter((x: any) => typeof x === "string")
     );
 
-    // streak is consecutive days ending TODAY
+    // Count consecutive days ending today (or yesterday if today's
+    // check-in hasn't been submitted yet). The streak only truly resets
+    // when yesterday is also missing a check-in.
     let streak = 0;
     let cursor = todayIso;
+
+    // If today has no check-in yet, start counting from yesterday
+    if (!dateSet.has(cursor)) {
+      cursor = shiftIsoDate(cursor, -1);
+    }
 
     while (dateSet.has(cursor)) {
       streak++;
@@ -373,6 +395,19 @@ export default function DashboardPage() {
           );
         }
 
+        // Today's check-in (for score persistence)
+        const { data: todayCheckin } = await supabase
+          .from("daily_checkins")
+          .select("did_workout, hit_calorie_goal")
+          .eq("profile_id", clientProfile.id)
+          .eq("checkin_date", todayIso)
+          .maybeSingle();
+
+        if (todayCheckin) {
+          setSavedTodayWorkout(todayCheckin.did_workout);
+          setSavedTodayCalories(todayCheckin.hit_calorie_goal);
+        }
+
         // Today's meals
         const { data: mealsData, error: mealsError } = await supabase
           .from("food_entries")
@@ -385,6 +420,27 @@ export default function DashboardPage() {
           console.error("Error loading food entries:", mealsError);
         } else if (mealsData) {
           setTodayMeals(mealsData as FoodEntryRow[]);
+        }
+
+        // Latest body check photo
+        const { data: bodyCheckData, error: bodyCheckError } = await supabase
+          .from("body_checks")
+          .select("image_path, created_at")
+          .eq("profile_id", clientProfile.id)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (bodyCheckError) {
+          console.error("Error loading latest body check:", bodyCheckError);
+        } else if (bodyCheckData?.image_path) {
+          setLastBodyCheckDate(bodyCheckData.created_at);
+          const { data: signedUrlData } = await supabase.storage
+            .from("body-checks")
+            .createSignedUrl(bodyCheckData.image_path, 60 * 60);
+          if (signedUrlData?.signedUrl) {
+            setLatestBodyCheckUrl(signedUrlData.signedUrl);
+          }
         }
       } finally {
         if (!cancelled) setIsDashboardLoading(false);
@@ -624,15 +680,26 @@ export default function DashboardPage() {
         if (dateToSave === todayIso) setHasTodayCheckinInReviewWeek(true);
       }
 
+      // Persist today's values for the score card before resetting form
+      if (dateToSave === todayIso) {
+        setSavedTodayWorkout(didWorkoutToday);
+        setSavedTodayCalories(hitCaloriesToday);
+      }
+
       setCheckinMessage("Check-in saved ✅");
       setIsCheckinOpen(false);
 
+      // Only reset form values for backfill saves — keep today's values
+      // visible in the locked DailyCheckinCard
+      if (dateToSave !== todayIso) {
+        setDidWorkoutToday(null);
+        setHitCaloriesToday(null);
+        setWorkoutRating(null);
+        setCheckinNotes("");
+      }
+
       setIsBackfillMode(false);
       setCheckinDate(todayIso);
-      setDidWorkoutToday(null);
-      setHitCaloriesToday(null);
-      setWorkoutRating(null);
-      setCheckinNotes("");
     } catch (error: unknown) {
       console.error(error);
       const msg =
@@ -670,25 +737,20 @@ async function handleGenerateWeeklySummary() {
 
 
 
-  const todayLabel = new Date().toLocaleDateString(undefined, {
-    weekday: "long",
-    month: "short",
-    day: "numeric",
-  });
-
   const calorieTarget = profile?.calorie_target ?? 0;
-  const caloriesRemaining = calorieTarget - caloriesLogged;
+
+  // Auto-set "hit calorie goal" to No when logged calories exceed the target
+  useEffect(() => {
+    if (calorieTarget > 0 && caloriesLogged > calorieTarget) {
+      setHitCaloriesToday(false);
+    }
+  }, [caloriesLogged, calorieTarget]);
 
   const plannedWorkouts = Number(profile?.realistic_workouts_per_week ?? 0);
   const workoutsThisWeek = weekStats.daysWorkedOut;
   const daysHitCalories = weekStats.daysHitCalories;
 
   const weekDaysInfo = getCurrentWeekDays() as WeekDayInfo[];
-  const workoutDaysSet = new Set(
-    (profile?.weekly_workout_schedule ?? []).map(
-      (w: any) => w.dayOfWeek as string
-    )
-  );
   const selectedWorkoutRaw =
     profile?.weekly_workout_schedule?.find(
       (w: any) => w.dayOfWeek === selectedDayName
@@ -711,16 +773,43 @@ async function handleGenerateWeeklySummary() {
   );
   const canBackfill = pastOrTodayDaysThisWeek.length > 1;
 
-  const disableTodayCheckinButton = isSunday && hasReviewForReviewWeek;
+  // Compute today's score for the score card
+  // Use form state while filling in, fall back to saved DB values
+  const todaysScore = (() => {
+    let s = 20; // Steps placeholder
+    const workout = didWorkoutToday ?? savedTodayWorkout;
+    const calories = hitCaloriesToday ?? savedTodayCalories;
+    if (workout === true) s += 40;
+    if (calories === true) s += 40;
+    return s;
+  })();
 
-  // ✅ NEW: show a clean loading screen while dashboard data is loading
+  // Smart suggestion based on current state
+  const hasCheckedInToday = savedTodayWorkout !== null || didWorkoutToday !== null;
+  const nextStepSuggestion = !hasCheckedInToday
+    ? "Start your day with a quick check-in to track your progress"
+    : caloriesLogged === 0
+    ? "Great check-in! Now log your first meal to track calories"
+    : "You're making progress! Stay consistent and keep going";
+
   if (isDashboardLoading || !profile) {
     return (
-      <main className="min-h-screen bg-slate-100 text-slate-900">
+      <main className="min-h-screen bg-slate-950 text-white">
         <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4">
-          <div className="flex items-center gap-3 rounded-2xl bg-white px-5 py-4 shadow-sm shadow-slate-200">
-            <Spinner size={18} className="text-slate-700" />
-            <p className="text-sm text-slate-700">Loading your dashboard…</p>
+          <div className="overflow-hidden rounded-2xl border border-white/5 bg-slate-900/80 shadow-xl backdrop-blur-xl">
+            <div className="bg-slate-800/50 px-6 py-3">
+              <div className="flex items-center gap-3">
+                <Spinner size={20} className="text-white" />
+                <p className="text-sm font-bold text-white">Loading your dashboard…</p>
+              </div>
+            </div>
+            <div className="px-6 py-4">
+              <div className="flex gap-2">
+                <div className="h-2 w-2 animate-pulse rounded-full bg-purple-400/50" style={{ animationDelay: "0ms" }} />
+                <div className="h-2 w-2 animate-pulse rounded-full bg-blue-400/50" style={{ animationDelay: "150ms" }} />
+                <div className="h-2 w-2 animate-pulse rounded-full bg-cyan-400/50" style={{ animationDelay: "300ms" }} />
+              </div>
+            </div>
           </div>
         </div>
       </main>
@@ -728,121 +817,107 @@ async function handleGenerateWeeklySummary() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-100 text-slate-900">
-      <DashboardNav profile={profile} />
+    <main className="relative min-h-screen bg-slate-950 text-white">
+      {/* Ambient background glow (matches landing page) */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute -top-40 -right-40 h-80 w-80 rounded-full bg-purple-600/10 blur-3xl" />
+        <div className="absolute top-1/3 -left-40 h-96 w-96 rounded-full bg-blue-600/10 blur-3xl" />
+        <div className="absolute bottom-20 right-1/4 h-80 w-80 rounded-full bg-cyan-600/10 blur-3xl" />
+      </div>
 
-      {shouldShowWeeklyReviewBanner && (
-        <div className="bg-slate-100">
-          <div className="mx-auto max-w-6xl px-4 pt-4 md:pt-6">
-            <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 shadow-sm md:flex-row md:items-center md:justify-between md:px-6">
-              <div className="flex items-start gap-3">
-                <div className="mt-1 h-2.5 w-2.5 flex-shrink-0 rounded-full bg-amber-500" />
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">
-                    Weekly reset
-                  </p>
-                  <p className="mt-1 text-sm text-amber-900">
-                    {hasTodayCheckinInReviewWeek
-                      ? "You logged activity this week, including today. Do a quick weekly review so I can adjust your calories and workouts for next week."
-                      : "Before we reset your plan for next week, complete today’s (Sunday) daily check-in. Once that’s logged, you can run your weekly review and get an updated plan."}
-                  </p>
+      {/* Content */}
+      <div className="relative z-10">
+        <DashboardNav profile={profile} variant="dark" />
+
+        {/* Weekly review banner */}
+        {shouldShowWeeklyReviewBanner && (
+          <div className="px-4 pt-6">
+            <div className="mx-auto max-w-6xl">
+              <div className="overflow-hidden rounded-2xl border border-amber-500/20 bg-gradient-to-br from-amber-500/10 to-slate-900/50 shadow-lg backdrop-blur-xl">
+                <div className="flex flex-col gap-4 p-5 md:flex-row md:items-center md:justify-between md:p-6">
+                  <div className="flex items-start gap-4">
+                    <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-lg bg-amber-600">
+                      <svg className="h-6 w-6 text-white" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-[0.16em] text-amber-400">
+                        Weekly reset
+                      </p>
+                      <p className="mt-2 text-sm font-medium leading-relaxed text-amber-200">
+                        {hasTodayCheckinInReviewWeek
+                          ? "You logged activity this week, including today. Do a quick weekly review so I can adjust your calories and workouts for next week."
+                          : "Before we reset your plan for next week, complete today's (Sunday) daily check-in. Once that's logged, you can run your weekly review and get an updated plan."}
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsWeeklyReviewOpen(true)}
+                    disabled={!hasTodayCheckinInReviewWeek}
+                    className={[
+                      "rounded-lg px-6 py-3 text-sm font-bold transition-all duration-200",
+                      hasTodayCheckinInReviewWeek
+                        ? "bg-amber-600 text-white hover:bg-amber-500"
+                        : "cursor-not-allowed bg-white/10 text-white/40",
+                    ].join(" ")}
+                  >
+                    Start weekly review
+                  </button>
                 </div>
               </div>
-
-              <button
-                type="button"
-                onClick={() => setIsWeeklyReviewOpen(true)}
-                disabled={!hasTodayCheckinInReviewWeek}
-                className={[
-                  "inline-flex items-center justify-center rounded-full px-5 py-2 text-xs font-semibold shadow-sm",
-                  hasTodayCheckinInReviewWeek
-                    ? "bg-blue-600 text-white hover:bg-blue-700"
-                    : "bg-slate-300 text-slate-600 cursor-not-allowed",
-                ].join(" ")}
-              >
-                Start weekly review
-              </button>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      <div className="mx-auto grid max-w-6xl gap-6 px-4 py-6 md:grid-cols-[minmax(0,2fr)_minmax(0,1.2fr)] md:py-8">
-        <section className="space-y-6">
-          <TodayPanel
-            profile={profile}
-            todayLabel={todayLabel}
-            calorieTarget={calorieTarget}
-            caloriesLogged={caloriesLogged}
-            caloriesRemaining={caloriesRemaining}
-            plannedWorkouts={plannedWorkouts}
-            workoutsThisWeek={workoutsThisWeek}
-            daysHitCalories={daysHitCalories}
-            todayMeals={todayMeals}
-            newMealDescription={newMealDescription}
-            setNewMealDescription={setNewMealDescription}
-            newMealCalories={newMealCalories}
-            setNewMealCalories={setNewMealCalories}
-            newMealType={newMealType}
-            setNewMealType={setNewMealType}
-            mealSaving={mealSaving}
-            mealError={mealError}
-            onAddMeal={handleAddMeal}
-            onDeleteMeal={handleDeleteMeal}
+        <div className="mx-auto max-w-6xl space-y-6 px-4 py-8 md:py-10">
+          {/* Greeting */}
+          <GreetingHeader
+            firstName={profile.first_name ?? ""}
+            streakCount={streakCount}
+            onOpenWeeklyRecap={handleGenerateWeeklySummary}
           />
 
-          <WorkoutPlanCard
-            profileId={profile.id}
-            weekDaysInfo={weekDaysInfo}
-            selectedDayName={selectedDayName}
-            setSelectedDayName={setSelectedDayName}
-            selectedWorkout={selectedWorkout}
-            workoutDaysSet={workoutDaysSet}
-          />
+          {/* Row 1: Score + Next Step */}
+          <div className="grid gap-6 lg:grid-cols-[2fr_3fr]">
+            <TodaysScoreCard
+              didWorkout={didWorkoutToday ?? savedTodayWorkout}
+              hitCalories={hitCaloriesToday ?? savedTodayCalories}
+              score={todaysScore}
+            />
+            <YourNextStepCard
+              suggestion={nextStepSuggestion}
+              coachTip={weeklySummary?.accountabilityMessage ?? null}
+              onLogWorkout={() => router.push("/plan")}
+              onLogFood={() => {}}
+              onQuickCheckin={() => {}}
+            />
+          </div>
 
-          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-sm text-slate-600">
-                Log whether you worked out and hit your calories. This powers
-                your weekly review.
-              </p>
-
-              {canBackfill && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsBackfillMode(true);
-                    const lastPastDay =
-                      pastOrTodayDaysThisWeek
-                        .filter((d) => d.isoDate < todayIso)
-                        .slice(-1)[0]?.isoDate ?? todayIso;
-                    setCheckinDate(lastPastDay);
-                    setIsCheckinOpen(true);
-                    setCheckinMessage(null);
-                    setDidWorkoutToday(null);
-                    setHitCaloriesToday(null);
-                    setWorkoutRating(null);
-                    setCheckinNotes("");
-                  }}
-                  className="mt-1 text-[11px] font-medium text-blue-600 underline-offset-2 hover:underline"
-                >
-                  Backfill a missed day this week
-                </button>
-              )}
-
-              {disableTodayCheckinButton && (
-                <p className="mt-1 text-[11px] text-slate-500">
-                  You’ve already completed this week’s review. New check-ins
-                  unlock tomorrow.
-                </p>
-              )}
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                setIsBackfillMode(false);
-                setCheckinDate(todayIso);
+          {/* Row 2: Check-In + Nutrition */}
+          <div className="grid gap-6 lg:grid-cols-[2fr_3fr]">
+            <DailyCheckinCard
+              didWorkout={didWorkoutToday}
+              setDidWorkout={setDidWorkoutToday}
+              hitCalories={hitCaloriesToday}
+              setHitCalories={setHitCaloriesToday}
+              caloriesExceeded={calorieTarget > 0 && caloriesLogged > calorieTarget}
+              workoutRating={workoutRating}
+              setWorkoutRating={setWorkoutRating}
+              notes={checkinNotes}
+              setNotes={setCheckinNotes}
+              message={checkinMessage}
+              isLoading={checkinLoading}
+              onSave={handleSaveCheckin}
+              onBackfill={() => {
+                setIsBackfillMode(true);
+                const lastPastDay =
+                  pastOrTodayDaysThisWeek
+                    .filter((d) => d.isoDate < todayIso)
+                    .slice(-1)[0]?.isoDate ?? todayIso;
+                setCheckinDate(lastPastDay);
                 setIsCheckinOpen(true);
                 setCheckinMessage(null);
                 setDidWorkoutToday(null);
@@ -850,35 +925,50 @@ async function handleGenerateWeeklySummary() {
                 setWorkoutRating(null);
                 setCheckinNotes("");
               }}
-              disabled={disableTodayCheckinButton}
-              className={[
-                "rounded-full px-4 py-1.5 text-xs font-semibold shadow-sm",
-                disableTodayCheckinButton
-                  ? "bg-slate-300 text-slate-600 cursor-not-allowed"
-                  : "bg-blue-600 text-white hover:bg-blue-700",
-              ].join(" ")}
-            >
-              Open today&apos;s check-in
-            </button>
+              canBackfill={canBackfill}
+              hasExistingCheckin={savedTodayWorkout !== null}
+            />
+            <NutritionSummaryCard
+              calorieTarget={calorieTarget}
+              caloriesLogged={caloriesLogged}
+              todayMeals={todayMeals}
+              newMealDescription={newMealDescription}
+              setNewMealDescription={setNewMealDescription}
+              newMealCalories={newMealCalories}
+              setNewMealCalories={setNewMealCalories}
+              newMealType={newMealType}
+              setNewMealType={setNewMealType}
+              mealSaving={mealSaving}
+              mealError={mealError}
+              onAddMeal={handleAddMeal}
+              onDeleteMeal={handleDeleteMeal}
+            />
           </div>
 
-          {checkinMessage && (
-            <p className="mt-2 text-xs text-slate-500">{checkinMessage}</p>
-          )}
-        </section>
+          {/* Row 3: Workout + [Body Check, Coaching] */}
+          <div className="grid gap-6 lg:grid-cols-[2fr_3fr]">
+            <TodaysWorkoutCard
+              selectedWorkout={selectedWorkout}
+              onStartWorkout={() => router.push("/plan")}
+              onViewPlan={() => router.push("/plan")}
+            />
+            <div className="grid gap-6 sm:grid-cols-2">
+              <BodyCheckCard lastCheckDate={lastBodyCheckDate} latestPhotoUrl={latestBodyCheckUrl} />
+              <CoachingCard smsActive={!!profile} />
+            </div>
+          </div>
 
-        <RightColumnPanel
-          weeklySummary={weeklySummary}
-          isGeneratingSummary={isGeneratingSummary}
-          canGenerate={!!profile?.id}
-          onGenerateWeeklySummary={handleGenerateWeeklySummary}
-          profile={profile}
-          streakCount={streakCount}
-          workoutsCount={weekStats.daysWorkedOut}
-          calorieDaysCount={weekStats.daysHitCalories}
-        />
+          {/* Row 4: Weekly Insights (full width) */}
+          <WeeklyInsightsBar
+            workoutsCompleted={workoutsThisWeek}
+            workoutsPlanned={plannedWorkouts}
+            caloriesHitDays={daysHitCalories}
+            coachMessage={weeklySummary?.accountabilityMessage ?? null}
+          />
+        </div>
       </div>
 
+      {/* Backfill modal */}
       <DailyCheckinModal
         isOpen={isCheckinOpen}
         onClose={() => {
@@ -895,6 +985,7 @@ async function handleGenerateWeeklySummary() {
         setDidWorkout={(v) => setDidWorkoutToday(v)}
         hitCalories={hitCaloriesToday}
         setHitCalories={(v) => setHitCaloriesToday(v)}
+        caloriesExceeded={calorieTarget > 0 && caloriesLogged > calorieTarget}
         workoutRating={workoutRating}
         setWorkoutRating={setWorkoutRating}
         notes={checkinNotes}
@@ -902,6 +993,7 @@ async function handleGenerateWeeklySummary() {
         message={checkinMessage}
         isLoading={checkinLoading}
         onSave={handleSaveCheckin}
+        hasExistingCheckin={!isBackfillMode && savedTodayWorkout !== null}
       />
 
       <WeeklyReviewModal

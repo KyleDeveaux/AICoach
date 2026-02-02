@@ -3,6 +3,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { supabase } from "../lib/supabaseClient";
 import type { InitialPlanResponse } from "../lib/types";
 import { saveClientProfile } from "../lib/saveClientProfile";
@@ -31,11 +32,22 @@ type ClientProfileFormState = {
   email: string;
   consentToCall: boolean;
 
-  // NEW: onboarding SMS opt-in
+  // NEW: photo upload
+  photoFile: File | null;
+  photoPreviewUrl: string | null;
+  photoAnalysis: {
+    summary: string;
+    focusAreas?: string[];
+    updatedPlanNotes?: string;
+  } | null;
+  photoAnalysisLoading: boolean;
+  photoAnalysisError: string | null;
+
+  // SMS opt-in
   smsConsentChecked: boolean;
   smsOptInLoading: boolean;
   smsOptInError: string | null;
-  smsEnabledInOnboarding: boolean; // whether user enabled via the opt-in step
+  smsEnabledInOnboarding: boolean;
 };
 
 const initialFormState: ClientProfileFormState = {
@@ -58,11 +70,103 @@ const initialFormState: ClientProfileFormState = {
   email: "",
   consentToCall: false,
 
+  photoFile: null,
+  photoPreviewUrl: null,
+  photoAnalysis: null,
+  photoAnalysisLoading: false,
+  photoAnalysisError: null,
+
   smsConsentChecked: false,
   smsOptInLoading: false,
   smsOptInError: null,
   smsEnabledInOnboarding: false,
 };
+
+// Image compression helper
+async function compressImage(
+  file: File,
+  maxWidth = 900,
+  maxHeight = 900,
+  quality = 0.8
+): Promise<File> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+
+    img.onload = () => {
+      try {
+        let { width, height } = img;
+        const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
+        width = width * ratio;
+        height = height * ratio;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          URL.revokeObjectURL(objectUrl);
+          return reject(new Error("Failed to get canvas context"));
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+
+        canvas.toBlob(
+          (blob) => {
+            URL.revokeObjectURL(objectUrl);
+            if (!blob) {
+              return reject(new Error("Failed to create compressed image"));
+            }
+            const compressedFile = new File([blob], "body-check.jpg", {
+              type: "image/jpeg",
+            });
+            resolve(compressedFile);
+          },
+          "image/jpeg",
+          quality
+        );
+      } catch (err) {
+        URL.revokeObjectURL(objectUrl);
+        reject(err);
+      }
+    };
+
+    img.onerror = (err) => {
+      URL.revokeObjectURL(objectUrl);
+      reject(err);
+    };
+
+    img.src = objectUrl;
+  });
+}
+
+function Spinner({ size = 16, className = "" }: { size?: number; className?: string }) {
+  return (
+    <svg
+      className={`animate-spin ${className}`}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+        fill="none"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+      />
+    </svg>
+  );
+}
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -73,9 +177,8 @@ export default function OnboardingPage() {
   const [plan, setPlan] = useState<InitialPlanResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // NEW: store payload after saving profile so we can generate AFTER SMS opt-in screen
   const [savedProfileId, setSavedProfileId] = useState<string | null>(null);
-  const [savedPayload, setSavedPayload] = useState<any>(null); // keeps your existing payload structure
+  const [savedPayload, setSavedPayload] = useState<any>(null);
 
   function updateField<K extends keyof ClientProfileFormState>(
     key: K,
@@ -84,33 +187,77 @@ export default function OnboardingPage() {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
+  async function handlePhotoAnalysis() {
+    if (!form.photoFile) {
+      setForm((p) => ({ ...p, photoAnalysisError: "Please select a photo first" }));
+      return;
+    }
+
+    setForm((p) => ({
+      ...p,
+      photoAnalysisLoading: true,
+      photoAnalysisError: null,
+      photoAnalysis: null,
+    }));
+
+    try {
+      const compressed = await compressImage(form.photoFile);
+
+      if (compressed.size > 900 * 1024) {
+        throw new Error("Photo is too large after compression. Try a smaller image.");
+      }
+
+      const formData = new FormData();
+      formData.append("photo", compressed);
+
+      const res = await fetch("/api/body-check", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to analyze photo");
+      }
+
+      const data = await res.json();
+      setForm((p) => ({ ...p, photoAnalysis: data.analysis }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to analyze photo";
+      setForm((p) => ({ ...p, photoAnalysisError: message }));
+    } finally {
+      setForm((p) => ({ ...p, photoAnalysisLoading: false }));
+    }
+  }
+
   const steps = [
-    // (same steps you already had) ...
     {
       id: "name",
-      title: "Let’s start with your name",
+      title: "Let's start with your name",
       description: "Your coach will use this to speak to you personally.",
       required: ["first_name", "last_name"] as (keyof ClientProfileFormState)[],
       content: (
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               First name *
             </label>
             <input
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               value={form.first_name}
               onChange={(e) => updateField("first_name", e.target.value)}
+              placeholder="John"
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Last name *
             </label>
             <input
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               value={form.last_name}
               onChange={(e) => updateField("last_name", e.target.value)}
+              placeholder="Doe"
             />
           </div>
         </div>
@@ -124,23 +271,24 @@ export default function OnboardingPage() {
       content: (
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Age *
             </label>
             <input
               type="number"
               min={16}
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               value={form.age}
               onChange={(e) => updateField("age", e.target.value)}
+              placeholder="25"
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Gender
             </label>
             <select
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               value={form.gender}
               onChange={(e) =>
                 updateField(
@@ -160,7 +308,7 @@ export default function OnboardingPage() {
     {
       id: "body",
       title: "Your height & weight",
-      description: "We’ll use this to calculate a starting plan.",
+      description: "We'll use this to calculate a starting plan.",
       required: [
         "height_feet",
         "height_inches",
@@ -170,7 +318,7 @@ export default function OnboardingPage() {
       content: (
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="sm:col-span-1">
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Height *
             </label>
             <div className="flex gap-2">
@@ -179,7 +327,7 @@ export default function OnboardingPage() {
                 min={3}
                 max={7}
                 placeholder="ft"
-                className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+                className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
                 value={form.height_feet}
                 onChange={(e) => updateField("height_feet", e.target.value)}
               />
@@ -188,32 +336,34 @@ export default function OnboardingPage() {
                 min={0}
                 max={11}
                 placeholder="in"
-                className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+                className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
                 value={form.height_inches}
                 onChange={(e) => updateField("height_inches", e.target.value)}
               />
             </div>
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Current weight (lbs) *
             </label>
             <input
               type="number"
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               value={form.weight_lbs}
               onChange={(e) => updateField("weight_lbs", e.target.value)}
+              placeholder="180"
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Goal weight (lbs) *
             </label>
             <input
               type="number"
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               value={form.goalWeight_lbs}
               onChange={(e) => updateField("goalWeight_lbs", e.target.value)}
+              placeholder="165"
             />
           </div>
         </div>
@@ -223,16 +373,16 @@ export default function OnboardingPage() {
       id: "goal-equipment",
       title: "Goal & equipment",
       description:
-        "We’ll match your training split to your goal and what you have access to.",
+        "We'll match your training split to your goal and what you have access to.",
       required: ["goalType", "equipment"] as (keyof ClientProfileFormState)[],
       content: (
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Main goal *
             </label>
             <select
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               value={form.goalType}
               onChange={(e) =>
                 updateField("goalType", e.target.value as GoalType)
@@ -244,11 +394,11 @@ export default function OnboardingPage() {
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Equipment access *
             </label>
             <select
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               value={form.equipment}
               onChange={(e) =>
                 updateField(
@@ -269,7 +419,7 @@ export default function OnboardingPage() {
       id: "workouts",
       title: "How often can you realistically train?",
       description:
-        "We’d rather give you 3 days you can stick to than 6 you can’t.",
+        "We'd rather give you 3 days you can stick to than 6 you can't.",
       required: [
         "currentWorkoutsPerWeek",
         "realisticWorkoutsPerWeek",
@@ -277,33 +427,35 @@ export default function OnboardingPage() {
       content: (
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Currently working out (days/week) *
             </label>
             <input
               type="number"
               min={0}
               max={7}
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               value={form.currentWorkoutsPerWeek}
               onChange={(e) =>
                 updateField("currentWorkoutsPerWeek", e.target.value)
               }
+              placeholder="3"
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Realistically can commit to (days/week) *
             </label>
             <input
               type="number"
               min={1}
               max={7}
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               value={form.realisticWorkoutsPerWeek}
               onChange={(e) =>
                 updateField("realisticWorkoutsPerWeek", e.target.value)
               }
+              placeholder="4"
             />
           </div>
         </div>
@@ -312,27 +464,27 @@ export default function OnboardingPage() {
     {
       id: "schedule-steps",
       title: "Your schedule & daily movement",
-      description: "We’ll align your step and workout targets with real life.",
+      description: "We'll align your step and workout targets with real life.",
       required: ["workSchedule", "estimatedSteps"] as (keyof ClientProfileFormState)[],
       content: (
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="sm:col-span-2">
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Work schedule (e.g. Mon–Fri 9–5)
             </label>
             <input
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               placeholder="Mon–Fri 9–5"
               value={form.workSchedule}
               onChange={(e) => updateField("workSchedule", e.target.value)}
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Preferred workout time
             </label>
             <select
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               value={form.preferredWorkoutTime}
               onChange={(e) => updateField("preferredWorkoutTime", e.target.value)}
             >
@@ -343,11 +495,11 @@ export default function OnboardingPage() {
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Estimated steps per day
             </label>
             <select
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               value={form.estimatedSteps}
               onChange={(e) => updateField("estimatedSteps", e.target.value)}
             >
@@ -365,38 +517,38 @@ export default function OnboardingPage() {
     {
       id: "contact",
       title: "How can your coach reach you?",
-      description: "We’ll use this for coaching-related updates. (No marketing.)",
+      description: "We'll use this for coaching-related updates. (No marketing.)",
       required: ["email", "phoneNumber"] as (keyof ClientProfileFormState)[],
       content: (
         <div className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Email *
             </label>
             <input
               type="email"
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               placeholder="you@example.com"
               value={form.email}
               onChange={(e) => updateField("email", e.target.value)}
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-800">
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
               Phone number *
             </label>
             <input
               type="tel"
-              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-white/10 bg-slate-800/50 px-4 py-3 text-sm text-white placeholder-slate-500 outline-none backdrop-blur transition focus:border-purple-500/50 focus:bg-slate-800 focus:ring-2 focus:ring-purple-500/20"
               placeholder="(555) 123-4567"
               value={form.phoneNumber}
               onChange={(e) => updateField("phoneNumber", e.target.value)}
             />
           </div>
-          <label className="flex items-start gap-2 text-xs text-slate-600">
+          <label className="flex items-start gap-2 text-xs text-slate-400">
             <input
               type="checkbox"
-              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-800 text-purple-600 focus:ring-purple-500"
               checked={form.consentToCall}
               onChange={(e) => updateField("consentToCall", e.target.checked)}
             />
@@ -409,7 +561,135 @@ export default function OnboardingPage() {
       ),
     },
 
-    // NEW STEP: SMS opt-in happens BEFORE plan generation
+    // NEW STEP: Optional Photo Upload
+    {
+      id: "photo-upload",
+      title: "Upload a progress photo (optional)",
+      description:
+        "Get AI analysis of your starting point to personalize your plan even further. You can skip this and add photos later.",
+      required: [] as (keyof ClientProfileFormState)[],
+      content: (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-purple-500/20 bg-gradient-to-br from-purple-500/10 to-blue-500/10 p-4">
+            <div className="flex items-start gap-3">
+              <span className="text-2xl">📸</span>
+              <div>
+                <p className="text-sm font-semibold text-white">Why upload a photo?</p>
+                <p className="mt-1 text-xs text-slate-400">
+                  Our AI will analyze your physique and identify specific focus areas to prioritize
+                  in your training plan. This helps us build a more personalized starting point.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-semibold text-slate-300">
+              Choose photo
+            </label>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <label
+                className={[
+                  "inline-flex cursor-pointer items-center justify-center rounded-xl border border-dashed border-slate-600 bg-slate-800/50 px-5 py-3 text-sm font-medium text-slate-300 transition hover:border-purple-500 hover:bg-slate-800",
+                  form.photoAnalysisLoading ? "pointer-events-none opacity-50" : "",
+                ].join(" ")}
+              >
+                <span>Choose or take photo</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] ?? null;
+                    if (file) {
+                      const url = URL.createObjectURL(file);
+                      setForm((p) => ({
+                        ...p,
+                        photoFile: file,
+                        photoPreviewUrl: url,
+                        photoAnalysis: null,
+                        photoAnalysisError: null,
+                      }));
+                    }
+                  }}
+                  disabled={form.photoAnalysisLoading}
+                />
+              </label>
+
+              {form.photoFile && !form.photoAnalysis && (
+                <button
+                  type="button"
+                  onClick={handlePhotoAnalysis}
+                  disabled={form.photoAnalysisLoading}
+                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 via-blue-600 to-cyan-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:shadow-purple-500/50 disabled:opacity-50"
+                >
+                  {form.photoAnalysisLoading && <Spinner size={14} />}
+                  <span>{form.photoAnalysisLoading ? "Analyzing..." : "Analyze photo"}</span>
+                </button>
+              )}
+            </div>
+
+            {form.photoFile && (
+              <p className="mt-2 text-xs text-slate-500">
+                Selected: <span className="font-medium text-slate-300">{form.photoFile.name}</span>
+              </p>
+            )}
+          </div>
+
+          {form.photoPreviewUrl && (
+            <div className="overflow-hidden rounded-xl border border-white/10 bg-slate-800/30">
+              <img
+                src={form.photoPreviewUrl}
+                alt="Preview"
+                className="max-h-80 w-full object-contain"
+              />
+            </div>
+          )}
+
+          {form.photoAnalysisError && (
+            <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3">
+              <p className="text-sm text-red-400">{form.photoAnalysisError}</p>
+            </div>
+          )}
+
+          {form.photoAnalysis && (
+            <div className="space-y-3 rounded-xl border border-green-500/20 bg-green-500/10 p-4">
+              <div className="flex items-center gap-2">
+                <span className="text-lg">✓</span>
+                <p className="text-sm font-semibold text-green-300">Analysis complete!</p>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  Summary
+                </p>
+                <p className="mt-1 text-sm text-slate-300">{form.photoAnalysis.summary}</p>
+              </div>
+
+              {form.photoAnalysis.focusAreas && form.photoAnalysis.focusAreas.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    Focus areas for your plan
+                  </p>
+                  <ul className="mt-1 list-disc pl-5 text-sm text-slate-300">
+                    {form.photoAnalysis.focusAreas.map((area, i) => (
+                      <li key={i}>{area}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          <p className="text-xs text-slate-500">
+            You can always add or update photos later in the Body Check section of your dashboard.
+          </p>
+        </div>
+      ),
+    },
+
+    // SMS opt-in step
     {
       id: "sms-opt-in",
       title: "Enable SMS coaching?",
@@ -418,9 +698,9 @@ export default function OnboardingPage() {
       required: [] as (keyof ClientProfileFormState)[],
       content: (
         <div className="space-y-4">
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-            <p className="font-medium text-slate-900">Automated SMS from Motivo</p>
-            <ul className="mt-2 list-disc pl-5 text-xs text-slate-600 space-y-1">
+          <div className="rounded-xl border border-white/10 bg-slate-800/30 p-4 text-sm text-slate-300">
+            <p className="font-semibold text-white">Automated SMS from Motivo</p>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-400">
               <li>Purpose: workout reminders + check-in questions + coaching replies (no marketing).</li>
               <li>Frequency: <b>2–4 messages/day</b>.</li>
               <li>Reply <b>STOP</b> to unsubscribe. Reply <b>HELP</b> for help.</li>
@@ -428,10 +708,10 @@ export default function OnboardingPage() {
             </ul>
           </div>
 
-          <label className="flex items-start gap-2 text-xs text-slate-700">
+          <label className="flex items-start gap-2 text-xs text-slate-300">
             <input
               type="checkbox"
-              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-800 text-purple-600 focus:ring-purple-500"
               checked={form.smsConsentChecked}
               onChange={(e) => updateField("smsConsentChecked", e.target.checked)}
             />
@@ -441,15 +721,14 @@ export default function OnboardingPage() {
           </label>
 
           {form.smsOptInError && (
-            <p className="text-xs text-rose-500">{form.smsOptInError}</p>
+            <p className="text-xs text-red-400">{form.smsOptInError}</p>
           )}
 
           <div className="flex items-center justify-between gap-2">
             <button
               type="button"
-              className="rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              className="rounded-full border border-slate-600 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800"
               onClick={() => {
-                // Skip SMS; proceed to generate
                 void handleGeneratePlan();
               }}
               disabled={loading || form.smsOptInLoading}
@@ -459,7 +738,7 @@ export default function OnboardingPage() {
 
             <button
               type="button"
-              className="rounded-full bg-blue-600 px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+              className="rounded-full bg-gradient-to-r from-purple-600 via-blue-600 to-cyan-600 px-5 py-2 text-xs font-semibold text-white shadow-lg hover:shadow-purple-500/50 disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => void handleEnableSmsAndGenerate()}
               disabled={loading || form.smsOptInLoading}
             >
@@ -479,7 +758,6 @@ export default function OnboardingPage() {
   const progress =
     totalSteps > 1 ? Math.round((currentStep / (totalSteps - 1)) * 100) : 100;
 
-  const isLastStep = currentStep === totalSteps - 1;
   const step = steps[currentStep];
 
   function validateCurrentStep(): boolean {
@@ -540,9 +818,6 @@ export default function OnboardingPage() {
 
     const normalizedSmsPhone = normalizePhoneNumberToE164(form.phoneNumber);
 
-    // Important change:
-    // - We store sms_phone_number (normalized) if valid
-    // - BUT we do NOT enable sms flags here (consent happens on next screen)
     const clientProfileBase = {
       first_name: form.first_name,
       last_name: form.last_name,
@@ -564,8 +839,12 @@ export default function OnboardingPage() {
       consent_to_call: form.consentToCall,
 
       sms_phone_number: normalizedSmsPhone ?? null,
-      allow_sms_checkins: false,         // ✅ consent not granted yet
+      allow_sms_checkins: false,
       timezone: null,
+
+      // Include photo analysis if available
+      active_focus_areas: form.photoAnalysis?.focusAreas ?? null,
+      active_plan_notes: form.photoAnalysis?.updatedPlanNotes ?? null,
     };
 
     const tdee = DailyCalorieNeeds(
@@ -593,9 +872,11 @@ export default function OnboardingPage() {
     const callAnswers = {
       why: "To stay in top shape for the job i am in.",
       futureVision: "In 6–12 months I want to feel leaner, stronger, and more energetic.",
-      pastStruggles: "Time manageent and diet consistency have been my biggest challenges.",
+      pastStruggles: "Time management and diet consistency have been my biggest challenges.",
       planRealismRating: 8,
       notes: "Looking forward to getting started and committed to making a change this time!",
+      // Include photo analysis summary if available
+      photoAnalysisSummary: form.photoAnalysis?.summary ?? null,
     };
 
     try {
@@ -603,7 +884,6 @@ export default function OnboardingPage() {
       const profileId = inserted.id as string;
       setSavedProfileId(profileId);
 
-      // Save payload for the next step (generate later)
       setSavedPayload({
         clientProfile: clientProfileForDb,
         callAnswers,
@@ -611,7 +891,6 @@ export default function OnboardingPage() {
         profileId,
       });
 
-      // Move to SMS opt-in step
       setCurrentStep((s) => s + 1);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Something went wrong";
@@ -701,13 +980,11 @@ export default function OnboardingPage() {
   function handleNext() {
     if (!validateCurrentStep()) return;
 
-    // If the current step is contact, we save profile then move to SMS opt-in
     if (steps[currentStep].id === "contact") {
       void handleSaveProfileOnly();
       return;
     }
 
-    // The SMS step has its own buttons; don’t auto-advance.
     if (steps[currentStep].id === "sms-opt-in") return;
 
     if (currentStep < totalSteps - 1) {
@@ -723,57 +1000,72 @@ export default function OnboardingPage() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white/90 backdrop-blur">
-        <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-600 text-white shadow-sm">
-              <span className="text-sm font-bold">AI</span>
-            </div>
-            <div className="leading-tight">
-              <a className="text-base font-semibold tracking-tight text-slate-900" href="/">
-                Motivo
-              </a>
-              <p className="text-[11px] text-slate-500">Onboarding • Build your first plan</p>
-            </div>
-          </div>
+    <main className="min-h-screen bg-slate-950 text-slate-50">
+      {/* Animated background gradients */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute -top-40 -right-40 h-80 w-80 rounded-full bg-purple-600/20 blur-3xl" />
+        <div className="absolute top-1/3 -left-40 h-96 w-96 rounded-full bg-blue-600/20 blur-3xl" />
+        <div className="absolute bottom-20 right-1/4 h-80 w-80 rounded-full bg-cyan-600/20 blur-3xl" />
+      </div>
 
-          <div className="hidden text-right text-[11px] text-slate-500 sm:block">
-            <p className="font-medium text-slate-700">
+      <header className="relative z-10 border-b border-white/5 bg-slate-950/80 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-4">
+          <Link href="/" className="group flex items-center gap-3">
+            <div className="relative">
+              <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-purple-500 via-blue-500 to-cyan-500 opacity-75 blur-md transition group-hover:opacity-100" />
+              <div className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-purple-600 via-blue-600 to-cyan-600 shadow-lg">
+                <span className="text-base font-black text-white">M</span>
+              </div>
+            </div>
+            <div>
+              <h1 className="text-lg font-black tracking-tight">
+                Moti<span className="bg-gradient-to-r from-purple-400 via-blue-400 to-cyan-400 bg-clip-text text-transparent">vo</span>
+              </h1>
+              <p className="text-[10px] font-medium text-slate-500">Onboarding • Build your plan</p>
+            </div>
+          </Link>
+
+          <div className="hidden text-right text-xs text-slate-500 sm:block">
+            <p className="font-semibold text-slate-300">
               Step {currentStep + 1} of {totalSteps}
             </p>
-            <p>About 2–3 minutes to complete</p>
+            <p className="text-[11px]">About 3–4 minutes</p>
           </div>
         </div>
       </header>
 
-      <div className="mx-auto max-w-4xl px-4 pt-8 pb-10 md:pt-10 md:pb-12">
-        <div className="w-full max-w-xl mx-auto">
-          <div className="mb-6">
-            <div className="flex items-center justify-between text-xs text-slate-500">
-              <span>Onboarding progress</span>
-              <span>{progress}%</span>
-            </div>
-            <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200">
-              <div
-                className="h-full rounded-full bg-blue-600 transition-all"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
+      <div className="relative z-10 mx-auto max-w-2xl px-6 pb-12 pt-8 md:pt-10">
+        <div className="mb-6">
+          <div className="mb-2 flex items-center justify-between text-xs text-slate-500">
+            <span>Onboarding progress</span>
+            <span className="font-semibold text-slate-400">{progress}%</span>
           </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800/50 backdrop-blur">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-purple-500 via-blue-500 to-cyan-500 transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
 
-          <div className="w-full rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
-            <h2 className="text-lg font-semibold text-slate-900">{step.title}</h2>
-            <p className="mt-1 text-xs text-slate-500">{step.description}</p>
+        <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-slate-900/80 p-6 shadow-2xl backdrop-blur-xl md:p-8">
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-purple-500/5 via-blue-500/5 to-cyan-500/5" />
 
-            <div className="mt-4 space-y-4">{step.content}</div>
+          <div className="relative z-10">
+            <h2 className="text-2xl font-bold text-white">{step.title}</h2>
+            <p className="mt-2 text-sm text-slate-400">{step.description}</p>
 
-            {error && <p className="mt-3 text-xs text-rose-500">{error}</p>}
+            <div className="mt-6">{step.content}</div>
 
-            {/* Buttons */}
+            {error && (
+              <div className="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 p-3">
+                <p className="text-sm text-red-400">{error}</p>
+              </div>
+            )}
+
             <div
               className={
-                "mt-6 flex items-center " +
+                "mt-8 flex items-center " +
                 (step.id === "sms-opt-in" ? "justify-end" : currentStep === 0 ? "justify-end" : "justify-between")
               }
             >
@@ -782,7 +1074,7 @@ export default function OnboardingPage() {
                   type="button"
                   onClick={handleBack}
                   disabled={loading}
-                  className="rounded-full px-4 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-full border border-slate-600 px-5 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Back
                 </button>
@@ -793,19 +1085,20 @@ export default function OnboardingPage() {
                   type="button"
                   onClick={handleNext}
                   disabled={loading}
-                  className="rounded-full bg-blue-600 px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-300"
+                  className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-purple-600 via-blue-600 to-cyan-600 px-6 py-2.5 text-sm font-bold text-white shadow-lg shadow-purple-500/30 transition hover:shadow-purple-500/50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {loading ? "Saving..." : isLastStep ? "Next" : "Next"}
+                  {loading && <Spinner size={14} />}
+                  <span>{loading ? "Saving..." : "Next"}</span>
                 </button>
               )}
             </div>
           </div>
-
-          <p className="mt-4 text-center text-[11px] text-slate-500">
-            Motivo is a coaching tool, not a medical service. For any medical concerns or conditions,
-            consult a healthcare professional.
-          </p>
         </div>
+
+        <p className="mt-6 text-center text-xs text-slate-600">
+          Motivo is a coaching tool, not a medical service. For any medical concerns or conditions,
+          consult a healthcare professional.
+        </p>
       </div>
     </main>
   );

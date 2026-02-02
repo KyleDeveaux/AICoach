@@ -29,6 +29,10 @@ export interface ClientProfileInput {
   allow_sms_checkins?: boolean;
   sms_phone_number?: string | null;
   timezone?: string | null;
+
+  // Photo analysis fields
+  active_focus_areas?: string[] | null;
+  active_plan_notes?: string | null;
 }
 
 export async function saveClientProfile(
@@ -64,6 +68,9 @@ export async function saveClientProfile(
       allow_sms_checkins: profile.allow_sms_checkins ?? false,
       sms_phone_number: profile.sms_phone_number ?? null,
       timezone: profile.timezone ?? null,
+
+      active_focus_areas: profile.active_focus_areas ?? null,
+      active_plan_notes: profile.active_plan_notes ?? null,
     })
     .select("id")
     .single();
