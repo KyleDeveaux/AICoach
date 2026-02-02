@@ -525,6 +525,7 @@ export async function POST(req: Request) {
     const [
       { data: checkins, error: checkinsError },
       { data: weightRows, error: weightsError },
+      { data: activityLogs, error: activityLogsError },
     ] = await Promise.all([
       supabase
         .from("daily_checkins")
@@ -539,6 +540,13 @@ export async function POST(req: Request) {
         .not("weight_lbs", "is", null)
         .order("week_start", { ascending: false })
         .limit(6),
+      supabase
+        .from("activity_logs")
+        .select("activity_date, activity_name, duration_minutes, intensity, notes")
+        .eq("profile_id", profileId)
+        .gte("activity_date", rangeStart)
+        .lte("activity_date", rangeEnd)
+        .order("activity_date", { ascending: true }),
     ]);
 
     if (checkinsError) {
@@ -549,6 +557,7 @@ export async function POST(req: Request) {
       );
     }
     if (weightsError) console.error("Weights load warning:", weightsError);
+    if (activityLogsError) console.error("Activity logs load warning:", activityLogsError);
 
     const safeCheckins = checkins ?? [];
     const adherence = {
@@ -556,6 +565,15 @@ export async function POST(req: Request) {
       daysWorkedOut: safeCheckins.filter((c) => !!c.did_workout).length,
       daysHitCalories: safeCheckins.filter((c) => !!c.hit_calorie_goal).length,
     };
+
+    const safeActivityLogs = activityLogs ?? [];
+    const activitySummary = safeActivityLogs.map((a: any) => ({
+      date: a.activity_date,
+      name: a.activity_name,
+      durationMinutes: a.duration_minutes,
+      intensity: a.intensity,
+      notes: a.notes,
+    }));
 
     const realisticDays = clamp(
       Number(profile.realistic_workouts_per_week ?? 3),
@@ -671,7 +689,8 @@ HARD RULES:
   - change rep ranges OR
   - add a small focus finisher
 - If active body-check focus areas exist, bias accessories/finishers toward those muscles.
-- No medical advice. Don’t mention AI or JSON.
+- If activityLogs are present, acknowledge non-strength activities (running, swimming, etc.) in your summary. Consider them when assessing overall training load and recovery needs. Do NOT penalize non-planned activities — encourage cross-training when appropriate.
+- No medical advice. Don't mention AI or JSON.
 `.trim();
 
     const userPayload = {
@@ -694,6 +713,7 @@ HARD RULES:
         planNotes: activePlanNotes,
         updatedAt: (profile as any).active_focus_updated_at ?? null,
       },
+      activityLogs: activitySummary,
       requiredDayOrder: preferredDays,
       calorieEngineDecision: {
         recommendation: engine.recommendation,

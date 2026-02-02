@@ -137,6 +137,14 @@ const systemPrompt = [
   "- Keep it beginner-friendly unless profile suggests advanced training.",
   "- Choose days that make sense (e.g. Mon/Wed/Fri for 3x/week).",
   "",
+  "PHOTO ANALYSIS (if provided):",
+  "- If the client data includes active_focus_areas or photoAnalysisSummary, use this to tailor the workout plan.",
+  "- Focus areas identify muscle groups or body regions that need extra attention based on AI analysis of the client's physique.",
+  "- Prioritize exercises that target these focus areas. For example, if 'shoulders' and 'core' are focus areas,",
+  "  include more shoulder and core exercises across workout days.",
+  "- If active_plan_notes are provided, incorporate those coaching recommendations into your exercise selection.",
+  "- If no photo analysis data is present, ignore this section and generate a standard plan.",
+  "",
   "Return ONLY JSON. No markdown. No extra commentary.",
 ].join("\n");
 
@@ -223,6 +231,8 @@ export async function POST(req: Request) {
           "work_schedule",
           "estimated_steps",
           "calorie_target",
+          "active_focus_areas",
+          "active_plan_notes",
         ].join(",")
       )
       .eq("id", profileId)
@@ -246,6 +256,7 @@ export async function POST(req: Request) {
       planRealismRating: Number.isFinite((callAnswersRaw as any).planRealismRating)
         ? (callAnswersRaw as any).planRealismRating
         : undefined,
+      photoAnalysisSummary: clampText((callAnswersRaw as any).photoAnalysisSummary, 800),
     };
 
     const userPayload = {

@@ -267,3 +267,98 @@ export interface SmsCheckinState {
   notes: string | null;
   last_message_at: string;
 }
+
+// ──────────────────────────
+// Workout logging
+// ──────────────────────────
+
+export type WorkoutLogStatus = "in_progress" | "completed";
+
+export type WorkoutLogRow = {
+  id: string;
+  profile_id: string;
+  workout_date: string;
+  day_of_week: string;
+  workout_name: string;
+  status: WorkoutLogStatus;
+  started_at: string;
+  completed_at: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkoutLogExerciseRow = {
+  id: string;
+  workout_log_id: string;
+  exercise_name: string;
+  planned_sets: number;
+  planned_reps: string;
+  rest_seconds: number | null;
+  notes: string | null;
+  is_user_added: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ExerciseSetLogRow = {
+  id: string;
+  workout_log_exercise_id: string;
+  set_number: number;
+  planned_reps: string | null;
+  reps_completed: number | null;
+  weight_value: number | null;
+  weight_unit: string;
+  is_completed: boolean;
+  completed_at: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkoutLogExerciseWithSets = WorkoutLogExerciseRow & {
+  exercise_set_logs: ExerciseSetLogRow[];
+};
+
+export type WorkoutLogWithDetails = WorkoutLogRow & {
+  workout_log_exercises: WorkoutLogExerciseWithSets[];
+};
+
+export type SetLogUpdate = {
+  reps_completed?: number | null;
+  weight_value?: number | null;
+  is_completed?: boolean;
+};
+
+export type AddExercisePayload = {
+  exercise_name: string;
+  planned_sets: number;
+  planned_reps: string;
+};
+
+// ──────────────────────────
+// Activity logging
+// ──────────────────────────
+
+export type ActivityIntensity = "light" | "moderate" | "hard";
+
+export type ActivityLogRow = {
+  id: string;
+  profile_id: string;
+  activity_date: string; // ISO date "YYYY-MM-DD"
+  activity_name: string;
+  duration_minutes: number;
+  intensity: ActivityIntensity;
+  notes: string | null;
+  created_at: string;
+};
+
+export type ActivityLogInsert = {
+  profile_id: string;
+  activity_date: string;
+  activity_name: string;
+  duration_minutes: number;
+  intensity: ActivityIntensity;
+  notes?: string | null;
+};
