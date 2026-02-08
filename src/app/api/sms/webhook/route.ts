@@ -1,13 +1,23 @@
 // app/api/sms/webhook/route.ts
+// Handles all inbound SMS from Twilio.
+// State machine: asked_workout → asked_calories → completed (via sms_checkin_states).
+// STOP/HELP/START keyword handling for compliance.
+
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
-import { supabaseAdmin } from "../../../lib/supabaseAdmin";
-import { sendSms, verifyTwilioSignature, getTwilioFromNumber } from "../../../lib/twilioServer";
+import { supabaseAdmin } from "@/app/lib/supabaseAdmin";
+import { sendSms, verifyTwilioSignature } from "@/app/lib/twilioServer";
+import {
+  getLocalTimeParts,
+  parseYesNo,
+  generateCoachSms,
+  sendAndLogSms,
+  logSmsMessage,
+  upsertDailyCheckinPatch,
+} from "@/app/lib/smsHelpers";
 
 export const runtime = "nodejs";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+// ─── Helpers ────────────────────────────────────────────────
 
 function toParams(rawBody: string): Record<string, string> {
   const sp = new URLSearchParams(rawBody);
@@ -16,131 +26,42 @@ function toParams(rawBody: string): Record<string, string> {
   return out;
 }
 
+function twiml(): NextResponse {
+  return new NextResponse("<Response></Response>", {
+    status: 200,
+    headers: { "Content-Type": "text/xml" },
+  });
+}
+
 function isStop(body: string) {
-  const t = body.trim().toUpperCase();
-  return ["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"].includes(t);
+  return ["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"].includes(
+    body.trim().toUpperCase()
+  );
 }
 
 function isHelp(body: string) {
-  const t = body.trim().toUpperCase();
-  return ["HELP", "INFO"].includes(t);
+  return ["HELP", "INFO"].includes(body.trim().toUpperCase());
 }
 
 function isStart(body: string) {
-  const t = body.trim().toUpperCase();
-  return ["START", "UNSTOP", "YES"].includes(t);
+  return ["START", "UNSTOP"].includes(body.trim().toUpperCase());
 }
 
-function parseYesNo(body: string): boolean | null {
-  const t = body.trim().toLowerCase();
-  if (["y", "yes", "yeah", "yep", "done", "did", "sure"].includes(t)) return true;
-  if (["n", "no", "nope", "nah", "not", "didn't", "didnt"].includes(t)) return false;
-  return null;
-}
-
-function parseRating(body: string): number | null {
-  const m = body.trim().match(/\b([1-9]|10)\b/);
-  if (!m) return null;
-  const n = Number(m[1]);
-  if (Number.isNaN(n) || n < 1 || n > 10) return null;
-  return n;
-}
-
-function safeLog(msg: string, meta?: Record<string, unknown>) {
-  // Avoid logging tokens; this only logs high-level info.
-  console.log(`[sms/webhook] ${msg}`, meta ? meta : "");
-}
-
-async function upsertDailyCheckinPatch(args: {
-  profileId: string;
-  checkinDate: string; // YYYY-MM-DD
-  patch: Partial<{
-    did_workout: boolean;
-    hit_calorie_goal: boolean;
-    workout_rating: number;
-    notes: string;
-    weight_kg: number;
-  }>;
-}) {
-  // Avoid "upsert overwriting with null" by doing select + update/insert.
-  const { data: existing, error: existingError } = await supabaseAdmin
-    .from("daily_checkins")
-    .select("id")
-    .eq("profile_id", args.profileId)
-    .eq("checkin_date", args.checkinDate)
-    .maybeSingle();
-
-  if (existingError) {
-    throw new Error(`Failed to check daily_checkins existing row: ${existingError.message}`);
-  }
-
-  const patch = { ...args.patch, updated_at: new Date().toISOString() } as any;
-
-  if (existing?.id) {
-    const { error: updErr } = await supabaseAdmin
-      .from("daily_checkins")
-      .update(patch)
-      .eq("id", existing.id);
-
-    if (updErr) throw new Error(`Failed to update daily_checkins: ${updErr.message}`);
-    return { created: false };
-  }
-
-  const { error: insErr } = await supabaseAdmin.from("daily_checkins").insert({
-    profile_id: args.profileId,
-    checkin_date: args.checkinDate,
-    ...patch,
-  });
-
-  if (insErr) throw new Error(`Failed to insert daily_checkins: ${insErr.message}`);
-  return { created: true };
-}
-
-async function generateCoachReply(args: {
-  firstName: string;
-  inboundText: string;
-  context: Record<string, unknown>;
-}) {
-  const system = `
-You are Motivo's SMS coach. You are supportive, concise, and practical.
-- No marketing.
-- No medical advice.
-- Keep replies under 400 characters whenever possible.
-- If user's message is unclear, ask ONE clarifying question.
-`.trim();
-
-  const payload = {
-    firstName: args.firstName,
-    inboundText: args.inboundText,
-    context: args.context,
-  };
-
-  const aiRes = await openai.responses.create({
-    model: OPENAI_MODEL,
-    input: [
-      { role: "system", content: system },
-      { role: "user", content: JSON.stringify(payload) },
-    ],
-  });
-
-  const out0: any = (aiRes.output?.[0] as any) ?? null;
-  const c0: any = out0?.content?.[0] ?? null;
-  const text = typeof c0?.text === "string" ? c0.text.trim() : "";
-  return text || "Got it. Want to share one quick detail so I can log this correctly?";
-}
+// ─── POST handler ───────────────────────────────────────────
 
 export async function POST(req: Request) {
   try {
     const rawBody = await req.text();
     const params = toParams(rawBody);
 
+    // Verify Twilio signature
     const okSig = verifyTwilioSignature({ req, params });
     if (!okSig) {
-      safeLog("Signature verification failed", { hasSig: !!req.headers.get("x-twilio-signature") });
+      console.log("[sms/webhook] Signature verification failed");
       return NextResponse.json({ error: "Invalid signature" }, { status: 403 });
     }
 
-    const from = (params["From"] || "").trim(); // E.164 from Twilio
+    const from = (params["From"] || "").trim();
     const to = (params["To"] || "").trim();
     const body = (params["Body"] || "").trim();
     const messageSid = (params["MessageSid"] || "").trim();
@@ -149,269 +70,352 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing From/Body" }, { status: 400 });
     }
 
-    // Find subscription by phone
+    // ─── Subscription lookup ──────────────────────────────
+
     const { data: sub, error: subErr } = await supabaseAdmin
       .from("sms_subscriptions")
-      .select("*")
+      .select("id, profile_id, user_id, phone_e164, status, timezone")
       .eq("phone_e164", from)
       .maybeSingle();
 
     if (subErr) {
-      console.error("webhook: subscription lookup error:", subErr.message);
+      console.error("[sms/webhook] subscription lookup error:", subErr.message);
       return NextResponse.json({ error: "Database error" }, { status: 500 });
     }
 
     if (!sub) {
-      // Unknown phone — do not leak info. Provide neutral reply.
-      safeLog("Unknown phone inbound", { from, sid: messageSid });
-      // Reply with a safe message
-      await sendSms(from, "Hi! This number isn’t linked to a Motivo account. If you think this is a mistake, contact support in the app.");
-      return new NextResponse("<Response></Response>", { status: 200, headers: { "Content-Type": "text/xml" } });
+      await sendSms(
+        from,
+        "Hi! This number isn't linked to a Motivo account. If you think this is a mistake, contact support in the app."
+      );
+      return twiml();
     }
 
-    // Store inbound message
-    const inboundInsert = await supabaseAdmin.from("sms_messages").insert({
-      profile_id: sub.profile_id,
-      user_id: sub.user_id,
+    // ─── Log inbound message ──────────────────────────────
+
+    await logSmsMessage({
+      profileId: sub.profile_id,
+      userId: sub.user_id,
       direction: "inbound",
-      from_number: from,
-      to_number: to,
+      from,
+      to,
       body,
-      twilio_message_sid: messageSid || null,
-      metadata: { kind: "inbound_webhook" },
+      sid: messageSid || null,
+      kind: "inbound_webhook",
     });
-
-    if (inboundInsert.error) {
-      console.error("webhook: inbound store error:", inboundInsert.error.message);
-      // continue; not fatal
-    }
 
     const nowIso = new Date().toISOString();
 
-    // STOP / HELP / START handling
+    // Update last inbound timestamp
+    await supabaseAdmin
+      .from("sms_subscriptions")
+      .update({ last_inbound_at: nowIso, updated_at: nowIso })
+      .eq("id", sub.id);
+
+    // ─── STOP / HELP / START ──────────────────────────────
+
     if (isStop(body)) {
-      await supabaseAdmin.from("sms_subscriptions").update({
-        status: "stopped",
-        opted_out_at: nowIso,
-        updated_at: nowIso,
-        pending_question: null,
-        pending_checkin_date: null,
-        pending_sent_at: null,
-        pending_attempts: 0,
-      }).eq("id", sub.id);
+      await supabaseAdmin
+        .from("sms_subscriptions")
+        .update({
+          status: "stopped",
+          opted_out_at: nowIso,
+          updated_at: nowIso,
+        })
+        .eq("id", sub.id);
 
-      await supabaseAdmin.from("client_profiles").update({
-        sms_checkins_enabled: false,
-        allow_sms_checkins: false,
-        // sms_opt_out_at: nowIso, // if you added minimal fields
-      }).eq("id", sub.profile_id);
+      await supabaseAdmin
+        .from("client_profiles")
+        .update({ sms_checkins_enabled: false, allow_sms_checkins: false })
+        .eq("id", sub.profile_id);
 
-      const reply = "You’re unsubscribed from Motivo SMS coaching. Reply START to re-enable. (Msg & data rates may apply.)";
-      const sent = await sendSms(from, reply);
-
-      await supabaseAdmin.from("sms_messages").insert({
-        profile_id: sub.profile_id,
-        user_id: sub.user_id,
-        direction: "outbound",
-        from_number: getTwilioFromNumber(),
-        to_number: from,
-        body: reply,
-        twilio_message_sid: sent.sid,
-        twilio_status: sent.status ?? null,
-        metadata: { kind: "stop_reply" },
+      await sendAndLogSms({
+        phone: from,
+        body: "You're unsubscribed from Motivo SMS coaching. Reply START to re-enable. (Msg & data rates may apply.)",
+        profileId: sub.profile_id,
+        userId: sub.user_id,
+        kind: "stop_reply",
       });
-
-      return new NextResponse("<Response></Response>", { status: 200, headers: { "Content-Type": "text/xml" } });
+      return twiml();
     }
 
     if (isHelp(body)) {
-      const reply =
-        "Motivo SMS Coaching Help:\n" +
-        "- Reply STOP to unsubscribe\n" +
-        "- Reply START to re-enable\n" +
-        "We send 2–4 automated check-ins/day (workouts + calories).\n" +
-        "Msg & data rates may apply.";
-      const sent = await sendSms(from, reply);
-
-      await supabaseAdmin.from("sms_messages").insert({
-        profile_id: sub.profile_id,
-        user_id: sub.user_id,
-        direction: "outbound",
-        from_number: getTwilioFromNumber(),
-        to_number: from,
-        body: reply,
-        twilio_message_sid: sent.sid,
-        twilio_status: sent.status ?? null,
-        metadata: { kind: "help_reply" },
+      await sendAndLogSms({
+        phone: from,
+        body:
+          "Motivo SMS Coaching Help:\n" +
+          "- Reply STOP to unsubscribe\n" +
+          "- Reply START to re-enable\n" +
+          "We send automated check-ins for workouts + calories.\n" +
+          "Msg & data rates may apply.",
+        profileId: sub.profile_id,
+        userId: sub.user_id,
+        kind: "help_reply",
       });
-
-      return new NextResponse("<Response></Response>", { status: 200, headers: { "Content-Type": "text/xml" } });
+      return twiml();
     }
 
     if (isStart(body)) {
-      await supabaseAdmin.from("sms_subscriptions").update({
-        status: "active",
-        opted_out_at: null,
-        updated_at: nowIso,
-      }).eq("id", sub.id);
+      await supabaseAdmin
+        .from("sms_subscriptions")
+        .update({ status: "active", opted_out_at: null, updated_at: nowIso })
+        .eq("id", sub.id);
 
-      await supabaseAdmin.from("client_profiles").update({
-        sms_checkins_enabled: true,
-        allow_sms_checkins: true,
-      }).eq("id", sub.profile_id);
+      await supabaseAdmin
+        .from("client_profiles")
+        .update({ sms_checkins_enabled: true, allow_sms_checkins: true })
+        .eq("id", sub.profile_id);
 
-      const reply =
-        "Motivo SMS coaching is back on ✅\n" +
-        "You’ll receive 2–4 automated check-ins/day.\n" +
-        "Reply STOP to unsubscribe. Reply HELP for help.\n" +
-        "Msg & data rates may apply.";
-      const sent = await sendSms(from, reply);
-
-      await supabaseAdmin.from("sms_messages").insert({
-        profile_id: sub.profile_id,
-        user_id: sub.user_id,
-        direction: "outbound",
-        from_number: getTwilioFromNumber(),
-        to_number: from,
-        body: reply,
-        twilio_message_sid: sent.sid,
-        twilio_status: sent.status ?? null,
-        metadata: { kind: "start_reply" },
+      await sendAndLogSms({
+        phone: from,
+        body:
+          "Motivo SMS coaching is back on!\n" +
+          "Reply STOP to unsubscribe. Reply HELP for help.\n" +
+          "Msg & data rates may apply.",
+        profileId: sub.profile_id,
+        userId: sub.user_id,
+        kind: "start_reply",
       });
-
-      return new NextResponse("<Response></Response>", { status: 200, headers: { "Content-Type": "text/xml" } });
+      return twiml();
     }
 
-    // If stopped, don’t coach further
+    // If stopped, don't process further
     if (sub.status !== "active") {
-      const reply = "SMS coaching is currently off. Reply START to re-enable or open Settings in the app.";
-      const sent = await sendSms(from, reply);
-
-      await supabaseAdmin.from("sms_messages").insert({
-        profile_id: sub.profile_id,
-        user_id: sub.user_id,
-        direction: "outbound",
-        from_number: getTwilioFromNumber(),
-        to_number: from,
-        body: reply,
-        twilio_message_sid: sent.sid,
-        twilio_status: sent.status ?? null,
-        metadata: { kind: "inactive_reply" },
+      await sendAndLogSms({
+        phone: from,
+        body: "SMS coaching is currently off. Reply START to re-enable or open Settings in the app.",
+        profileId: sub.profile_id,
+        userId: sub.user_id,
+        kind: "inactive_reply",
       });
-
-      return new NextResponse("<Response></Response>", { status: 200, headers: { "Content-Type": "text/xml" } });
+      return twiml();
     }
 
-    // Load profile basics for coach personalization
-    const { data: profile, error: profErr } = await supabaseAdmin
+    // ─── Load profile for personalization ─────────────────
+
+    const { data: profile } = await supabaseAdmin
       .from("client_profiles")
-      .select("first_name, timezone")
+      .select("first_name, timezone, goal_why, past_struggles")
       .eq("id", sub.profile_id)
       .single();
 
-    if (profErr) {
-      console.error("webhook: profile lookup error:", profErr.message);
-    }
-
     const firstName = profile?.first_name || "there";
+    const tz = sub.timezone || profile?.timezone || process.env.DEFAULT_TIMEZONE || "UTC";
+    const { date: localDate } = getLocalTimeParts(tz);
 
-    // Update subscription last inbound
-    await supabaseAdmin.from("sms_subscriptions").update({
-      last_inbound_at: nowIso,
-      updated_at: nowIso,
-    }).eq("id", sub.id);
+    // ─── State machine via sms_checkin_states ─────────────
 
-    // Interpret based on pending question
-    let patch: any = null;
-    let interpreted = false;
+    const { data: state } = await supabaseAdmin
+      .from("sms_checkin_states")
+      .select("*")
+      .eq("profile_id", sub.profile_id)
+      .eq("checkin_date", localDate)
+      .maybeSingle();
 
-    const pendingQuestion = sub.pending_question as string | null;
-    const checkinDate = sub.pending_checkin_date as string | null;
+    // No active conversation or already completed → generic coach reply
+    if (!state || state.stage === "completed" || state.stage === "idle") {
+      const reply = await generateCoachSms({
+        firstName,
+        goalWhy: profile?.goal_why,
+        instruction:
+          "The client sent a message outside of an active check-in conversation. Reply naturally and supportively. If they seem to be reporting workout or calorie info, acknowledge it warmly.",
+        context: { inboundText: body },
+        fallback: `Got your message, ${firstName}! If you need to log today's check-in, I'll text you this evening.`,
+      });
 
-    if (pendingQuestion && checkinDate) {
-      if (pendingQuestion === "workout") {
-        const yn = parseYesNo(body);
-        if (yn !== null) {
-          patch = { did_workout: yn };
-          interpreted = true;
-        }
-      } else if (pendingQuestion === "calories") {
-        const yn = parseYesNo(body);
-        if (yn !== null) {
-          patch = { hit_calorie_goal: yn };
-          interpreted = true;
-        }
-      } else if (pendingQuestion === "rating") {
-        const r = parseRating(body);
-        if (r !== null) {
-          patch = { workout_rating: r };
-          interpreted = true;
-        }
-      } else if (pendingQuestion === "notes") {
-        patch = { notes: body };
-        interpreted = true;
-      }
-
-      if (interpreted && patch) {
-        try {
-          await upsertDailyCheckinPatch({
-            profileId: sub.profile_id,
-            checkinDate,
-            patch,
-          });
-
-          // Clear pending question
-          await supabaseAdmin.from("sms_subscriptions").update({
-            pending_question: null,
-            pending_checkin_date: null,
-            pending_sent_at: null,
-            pending_attempts: 0,
-            updated_at: nowIso,
-          }).eq("id", sub.id);
-        } catch (e: any) {
-          console.error("webhook: daily_checkins update error:", e?.message || e);
-        }
-      }
+      await sendAndLogSms({
+        phone: from,
+        body: reply,
+        profileId: sub.profile_id,
+        userId: sub.user_id,
+        kind: "coach_reply",
+        extra: { freeform: true },
+      });
+      return twiml();
     }
 
-    // Coach reply (OpenAI)
-    const replyText = await generateCoachReply({
+    // ─── Stage: asked_workout ─────────────────────────────
+
+    if (state.stage === "asked_workout") {
+      const yn = parseYesNo(body);
+
+      if (yn === null) {
+        // Can't parse — ask for clarification
+        const clarify = await generateCoachSms({
+          firstName,
+          instruction:
+            "The client replied to the workout question but I couldn't tell if they mean yes or no. Ask them to clarify with a simple yes or no. Keep it friendly and brief.",
+          context: { inboundText: body },
+          fallback: `Hey ${firstName}, I need a quick yes or no on that one — did you work out today?`,
+        });
+
+        await sendAndLogSms({
+          phone: from,
+          body: clarify,
+          profileId: sub.profile_id,
+          userId: sub.user_id,
+          kind: "clarification",
+          extra: { stage: "asked_workout" },
+        });
+        return twiml();
+      }
+
+      // Save workout answer, advance to asked_calories
+      await supabaseAdmin
+        .from("sms_checkin_states")
+        .update({
+          did_workout: yn,
+          stage: "asked_calories",
+          last_message_at: nowIso,
+        })
+        .eq("id", state.id);
+
+      try {
+        await upsertDailyCheckinPatch({
+          profileId: sub.profile_id,
+          checkinDate: localDate,
+          patch: { did_workout: yn },
+        });
+      } catch (err: any) {
+        console.error("[sms/webhook] daily_checkins patch error:", err?.message);
+      }
+
+      // Generate response that transitions to calorie question
+      const reply = await generateCoachSms({
+        firstName,
+        goalWhy: profile?.goal_why,
+        instruction: yn
+          ? "The client confirmed they worked out today. Acknowledge it positively (1 sentence max). Then ask if they stayed close to their calorie target today. Expect a yes/no reply."
+          : "The client said they didn't work out today. Be supportive and understanding (1 sentence max). Then ask if they stayed close to their calorie target today. Expect a yes/no reply.",
+        fallback: yn
+          ? `Nice work getting that in today! Quick one more — did you stay close to your calorie target? (yes/no)`
+          : `No worries at all. Quick question — did you stay close to your calorie target today? (yes/no)`,
+      });
+
+      await sendAndLogSms({
+        phone: from,
+        body: reply,
+        profileId: sub.profile_id,
+        userId: sub.user_id,
+        kind: "coach_reply",
+        extra: { stage: "asked_calories", did_workout: yn },
+      });
+      return twiml();
+    }
+
+    // ─── Stage: asked_calories ────────────────────────────
+
+    if (state.stage === "asked_calories") {
+      const yn = parseYesNo(body);
+
+      if (yn === null) {
+        const clarify = await generateCoachSms({
+          firstName,
+          instruction:
+            "The client replied to the calorie question but I couldn't tell if they mean yes or no. Ask them to clarify with a simple yes or no. Keep it friendly and brief.",
+          context: { inboundText: body },
+          fallback: `Quick yes or no — did you stay close to your calorie target today?`,
+        });
+
+        await sendAndLogSms({
+          phone: from,
+          body: clarify,
+          profileId: sub.profile_id,
+          userId: sub.user_id,
+          kind: "clarification",
+          extra: { stage: "asked_calories" },
+        });
+        return twiml();
+      }
+
+      // Save calorie answer, mark completed
+      await supabaseAdmin
+        .from("sms_checkin_states")
+        .update({
+          hit_calorie_goal: yn,
+          stage: "completed",
+          last_message_at: nowIso,
+        })
+        .eq("id", state.id);
+
+      try {
+        await upsertDailyCheckinPatch({
+          profileId: sub.profile_id,
+          checkinDate: localDate,
+          patch: { hit_calorie_goal: yn },
+        });
+      } catch (err: any) {
+        console.error("[sms/webhook] daily_checkins patch error:", err?.message);
+      }
+
+      // Build wrap-up based on both answers
+      const didWorkout = state.did_workout ?? false;
+      const hitCalories = yn;
+
+      let wrapInstruction: string;
+      if (didWorkout && hitCalories) {
+        wrapInstruction =
+          "The client worked out AND hit their calories today. Give a short, genuinely enthusiastic wrap-up. Mention stacking good days. Don't overdo it.";
+      } else if (didWorkout && !hitCalories) {
+        wrapInstruction =
+          "The client worked out but didn't hit calories. Acknowledge the workout positively, and be casual about the food — tomorrow's a new chance. Keep it real.";
+      } else if (!didWorkout && hitCalories) {
+        wrapInstruction =
+          "The client didn't work out but hit their calories. Acknowledge the calorie win. Be understanding about the workout. Tomorrow's a fresh start.";
+      } else {
+        wrapInstruction =
+          "Neither workout nor calories hit today. Be genuinely supportive — one day doesn't define them. Frame it as data, not a verdict. We reset tomorrow.";
+      }
+
+      const wrapUp = await generateCoachSms({
+        firstName,
+        goalWhy: profile?.goal_why,
+        pastStruggles: profile?.past_struggles,
+        instruction: wrapInstruction + " This is the end of the check-in, so don't ask any more questions.",
+        fallback: didWorkout && hitCalories
+          ? `Dialed-in day, ${firstName}. Keep stacking these. See you tomorrow.`
+          : didWorkout
+            ? `Workout done, that's a win. Food can be a work in progress. We go again tomorrow.`
+            : hitCalories
+              ? `Calories on point — that counts for a lot. We'll get the workout in next time.`
+              : `Today wasn't perfect but you're still showing up by checking in. We reset tomorrow.`,
+      });
+
+      await sendAndLogSms({
+        phone: from,
+        body: wrapUp,
+        profileId: sub.profile_id,
+        userId: sub.user_id,
+        kind: "checkin_wrapup",
+        extra: { did_workout: didWorkout, hit_calorie_goal: hitCalories },
+      });
+      return twiml();
+    }
+
+    // ─── Fallback for unexpected stages ───────────────────
+
+    const fallback = await generateCoachSms({
       firstName,
-      inboundText: body,
-      context: {
-        interpreted,
-        pendingQuestion,
-        checkinDate,
-        patch,
-      },
+      instruction:
+        "The client sent a message but there's no clear question pending. Reply naturally and let them know you'll check in later.",
+      context: { inboundText: body },
+      fallback: `Got it, ${firstName}. I'll check in with you later today!`,
     });
 
-    const sent = await sendSms(from, replyText);
-
-    await supabaseAdmin.from("sms_messages").insert({
-      profile_id: sub.profile_id,
-      user_id: sub.user_id,
-      direction: "outbound",
-      from_number: getTwilioFromNumber(),
-      to_number: from,
-      body: replyText,
-      twilio_message_sid: sent.sid,
-      twilio_status: sent.status ?? null,
-      metadata: { kind: "coach_reply", interpreted, pendingQuestion },
+    await sendAndLogSms({
+      phone: from,
+      body: fallback,
+      profileId: sub.profile_id,
+      userId: sub.user_id,
+      kind: "coach_reply",
+      extra: { stage: state.stage },
     });
-
-    // Update subscription last outbound
-    await supabaseAdmin.from("sms_subscriptions").update({
-      last_outbound_at: nowIso,
-      updated_at: nowIso,
-    }).eq("id", sub.id);
-
-    return new NextResponse("<Response></Response>", {
-      status: 200,
-      headers: { "Content-Type": "text/xml" },
-    });
-  } catch (err) {
-    console.error("sms/webhook route error:", err);
-    return NextResponse.json({ error: "Unexpected server error" }, { status: 500 });
+    return twiml();
+  } catch (err: any) {
+    console.error("[sms/webhook] route error:", err?.message || err);
+    return NextResponse.json(
+      { error: "Unexpected server error" },
+      { status: 500 }
+    );
   }
 }

@@ -1,29 +1,31 @@
 import { NextResponse } from "next/server";
-import { supabase } from "@/app/lib/supabaseClient";
+import { createSupabaseServerClient } from "@/app/lib/supabaseServer";
 import { twilioClient, getTwilioFromConfig } from "@/app/lib/twilioClient";
 
-export async function POST(req: Request) {
+export async function POST() {
   try {
-    const { profileId } = await req.json();
+    // ✅ Auth: must be logged in
+    const supabase = await createSupabaseServerClient();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
 
-    if (!profileId) {
-      return NextResponse.json(
-        { error: "Missing profileId in request body." },
-        { status: 400 }
-      );
+    if (userError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // 1️⃣ Load the profile from Supabase
+    // ✅ Load the profile owned by the authenticated user (IDOR protection)
     const { data: profile, error: profileError } = await supabase
       .from("client_profiles")
       .select("*")
-      .eq("id", profileId)
+      .eq("user_id", user.id)
       .single();
 
     if (profileError || !profile) {
       console.error("Error loading profile for test SMS:", profileError);
       return NextResponse.json(
-        { error: "Could not load profile for test SMS." },
+        { error: "No profile found for this user." },
         { status: 404 }
       );
     }
