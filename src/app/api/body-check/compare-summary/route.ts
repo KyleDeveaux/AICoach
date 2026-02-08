@@ -1,6 +1,7 @@
 // app/api/body-check/compare-summary/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import { createSupabaseServerClient } from "@/app/lib/supabaseServer";
 
 export const runtime = "nodejs";
 
@@ -70,6 +71,17 @@ function fallbackCompareSummary(left: CompareEntryInput, right: CompareEntryInpu
 
 export async function POST(req: NextRequest) {
   try {
+    // ✅ Auth: must be logged in
+    const supabase = await createSupabaseServerClient();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = (await req.json()) as Partial<CompareSummaryRequestBody>;
 
     if (!body?.left || !body?.right) {

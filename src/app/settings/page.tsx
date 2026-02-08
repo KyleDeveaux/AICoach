@@ -191,18 +191,107 @@ export default function SettingsPage() {
     }
 
     const smsEnabled = allowSmsCheckins && !!normalizedSmsPhone;
+    const wasEnabled = effectiveDbAllow;
+    const isEnabling = smsEnabled && !wasEnabled;
+    const isDisabling = !smsEnabled && wasEnabled;
 
     try {
+      // If ENABLING SMS → call /api/sms/opt-in to create sms_subscriptions row + send welcome
+      if (isEnabling) {
+        const optInRes = await fetch("/api/sms/opt-in", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            profileId: profile.id,
+            phone: normalizedSmsPhone,
+            consentChecked: true,
+            source: "settings",
+          }),
+        });
+
+        if (!optInRes.ok) {
+          const data = await optInRes.json().catch(() => ({}));
+          throw new Error(data.error || "Failed to enable SMS.");
+        }
+
+        // opt-in route already updates client_profiles, so just reload
+        const { data: refreshed, error: refreshErr } = await supabase
+          .from("client_profiles")
+          .select("*")
+          .eq("id", profile.id)
+          .single();
+
+        if (refreshErr || !refreshed) {
+          throw new Error("Failed to refresh profile after enabling SMS.");
+        }
+
+        const updated = refreshed as ClientProfile;
+        setProfile(updated);
+        setPhoneNumber(
+          updated.phone_number ?? updated.sms_phone_number ?? rawPhone ?? ""
+        );
+        setAllowSmsCheckins(
+          !!(updated.sms_checkins_enabled ?? updated.allow_sms_checkins)
+        );
+        setSuccess("SMS check-ins enabled! You should receive a welcome text.");
+        return;
+      }
+
+      // If DISABLING SMS → update client_profiles AND sms_subscriptions
+      if (isDisabling) {
+        // Update client_profiles
+        const { error: updateError } = await supabase
+          .from("client_profiles")
+          .update({
+            phone_number: rawPhone,
+            sms_phone_number: normalizedSmsPhone,
+            sms_checkins_enabled: false,
+            allow_sms_checkins: false,
+          })
+          .eq("id", profile.id);
+
+        if (updateError) {
+          console.error("Error disabling SMS in profile:", updateError);
+          throw updateError;
+        }
+
+        // Update sms_subscriptions via API to mark as stopped
+        const disableRes = await fetch("/api/sms/opt-out", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profileId: profile.id }),
+        });
+
+        // Don't fail if opt-out API doesn't exist or fails (subscription might not exist)
+        if (!disableRes.ok) {
+          console.warn("SMS opt-out API call failed (subscription may not exist)");
+        }
+
+        const { data: refreshed } = await supabase
+          .from("client_profiles")
+          .select("*")
+          .eq("id", profile.id)
+          .single();
+
+        if (refreshed) {
+          const updated = refreshed as ClientProfile;
+          setProfile(updated);
+          setPhoneNumber(
+            updated.phone_number ?? updated.sms_phone_number ?? rawPhone ?? ""
+          );
+          setAllowSmsCheckins(false);
+        }
+
+        setSuccess("SMS check-ins disabled.");
+        return;
+      }
+
+      // If just updating phone number (SMS state unchanged)
       const { data, error: updateError } = await supabase
         .from("client_profiles")
         .update({
-          // Raw value for UI / general contact
           phone_number: rawPhone,
-
-          // Normalized for Twilio matching
           sms_phone_number: normalizedSmsPhone,
-
-          // Canonical flags
           sms_checkins_enabled: smsEnabled,
           allow_sms_checkins: smsEnabled,
         })
