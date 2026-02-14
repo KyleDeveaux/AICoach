@@ -217,13 +217,12 @@ export default function WeeklyReviewModal({
           <div className="border-t border-white/5 bg-cyan-500/10 px-6 py-4">
             <div className="flex items-center gap-3">
               <div className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
-              <p className="text-xs font-medium text-cyan-300">
+              <p className="text-xs font-medium text-blue-300">
                 Analyzing your week and updating your plan…
               </p>
             </div>
           </div>
         )}
-
         {/* Actions */}
         <div className="flex gap-3 border-t border-white/5 p-6">
           {!shouldForceWeeklyReview && (

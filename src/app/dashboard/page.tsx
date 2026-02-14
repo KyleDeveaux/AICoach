@@ -738,6 +738,9 @@ async function handleGenerateWeeklySummary() {
 
 
   const calorieTarget = profile?.calorie_target ?? 0;
+  const proteinTarget = profile?.protein_target ?? 0;
+  const carbsTarget = profile?.carbs_target ?? 0;
+  const fatTarget = profile?.fat_target ?? 0;
 
   // Auto-set "hit calorie goal" to No when logged calories exceed the target
   useEffect(() => {
@@ -890,7 +893,7 @@ async function handleGenerateWeeklySummary() {
             <YourNextStepCard
               suggestion={nextStepSuggestion}
               coachTip={weeklySummary?.accountabilityMessage ?? null}
-              onLogWorkout={() => router.push("/plan")}
+              onLogWorkout={() => router.push("/workout")}
               onLogFood={() => {}}
               onQuickCheckin={() => {}}
             />
@@ -931,6 +934,9 @@ async function handleGenerateWeeklySummary() {
             <NutritionSummaryCard
               calorieTarget={calorieTarget}
               caloriesLogged={caloriesLogged}
+              proteinTarget={proteinTarget}
+              carbsTarget={carbsTarget}
+              fatTarget={fatTarget}
               todayMeals={todayMeals}
               newMealDescription={newMealDescription}
               setNewMealDescription={setNewMealDescription}
@@ -949,8 +955,8 @@ async function handleGenerateWeeklySummary() {
           <div className="grid gap-6 lg:grid-cols-[2fr_3fr]">
             <TodaysWorkoutCard
               selectedWorkout={selectedWorkout}
-              onStartWorkout={() => router.push("/plan")}
-              onViewPlan={() => router.push("/plan")}
+              onStartWorkout={() => router.push("/workout")}
+              onViewPlan={() => router.push("/workout")}
             />
             <div className="grid gap-6 sm:grid-cols-2">
               <BodyCheckCard lastCheckDate={lastBodyCheckDate} latestPhotoUrl={latestBodyCheckUrl} />

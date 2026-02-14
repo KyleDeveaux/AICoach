@@ -8,9 +8,9 @@ export type GoalType = "lose_weight" | "gain_muscle" | "recomp";
 
 export interface MacroTargets {
   calorieTarget: number;
-  // proteinTarget_g: number;
-  // carbsTarget_g: number;
-  // fatTarget_g: number;
+  proteinTarget: number;
+  carbsTarget: number;
+  fatTarget: number;
 }
 
 // ──────────────────────────
@@ -72,6 +72,9 @@ export interface ClientProfile {
   goalType: GoalType;
   goalWeight_kg: string;
   calorie_target: number | null;
+  protein_target: number | null;
+  carbs_target: number | null;
+  fat_target: number | null;
   currentWorkoutsPerWeek: string;
   realistic_workouts_per_week: string;
   workSchedule: string;
@@ -183,6 +186,9 @@ export type FoodEntryRow = {
   meal_type: string | null;
   description: string;
   calories: number;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -193,6 +199,9 @@ export type FoodEntryInsert = {
   meal_type?: string | null;
   description: string;
   calories: number;
+  protein_g?: number | null;
+  carbs_g?: number | null;
+  fat_g?: number | null;
 };
 
 // ──────────────────────────

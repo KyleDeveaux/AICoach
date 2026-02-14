@@ -100,10 +100,10 @@ export default function Home() {
                 </Link>
                 <a
                   href="#how-it-works"
-                  className="group flex items-center justify-center gap-2 rounded-2xl border border-slate-700 bg-slate-900/50 px-8 py-4 text-base font-semibold text-slate-300 backdrop-blur transition hover:border-purple-500/50 hover:bg-slate-800/50 hover:text-white"
+                  className="group flex items-center justify-center gap-2 rounded-2xl bg-amber-600 px-8 py-4 text-base font-semibold text-white shadow-lg shadow-amber-500/25 transition hover:bg-amber-500 hover:shadow-amber-500/40"
                 >
-                  Watch Demo
-                  <svg className="h-5 w-5 transition group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  See How It Works
+                  <svg className="h-5 w-5 group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>
                 </a>

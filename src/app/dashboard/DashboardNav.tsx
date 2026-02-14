@@ -17,8 +17,8 @@ const navItems = [
     ),
   },
   {
-    href: "/plan",
-    label: "Plan",
+    href: "/workout",
+    label: "Workout",
     icon: (
       <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
@@ -26,7 +26,7 @@ const navItems = [
     ),
   },
   {
-    href: "/dashboard?tab=food",
+    href: "/food",
     label: "Food",
     icon: (
       <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -119,9 +119,7 @@ export default function DashboardNav({ profile, variant = "dark" }: DashboardNav
             const isActive =
               item.href === "/dashboard"
                 ? pathname === "/dashboard"
-                : item.href.startsWith("/dashboard?")
-                  ? false // query-based tabs need client-side search param matching
-                  : pathname?.startsWith(item.href) ?? false;
+                : pathname?.startsWith(item.href) ?? false;
 
             return (
               <Link

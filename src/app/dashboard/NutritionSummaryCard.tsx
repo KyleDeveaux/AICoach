@@ -5,6 +5,9 @@ import type { FoodEntryRow } from "../lib/types";
 type NutritionSummaryCardProps = {
   calorieTarget: number;
   caloriesLogged: number;
+  proteinTarget: number;
+  carbsTarget: number;
+  fatTarget: number;
   todayMeals: FoodEntryRow[];
   newMealDescription: string;
   setNewMealDescription: (v: string) => void;
@@ -21,6 +24,9 @@ type NutritionSummaryCardProps = {
 export default function NutritionSummaryCard({
   calorieTarget,
   caloriesLogged,
+  proteinTarget,
+  carbsTarget,
+  fatTarget,
   todayMeals,
   newMealDescription,
   setNewMealDescription,
@@ -34,25 +40,19 @@ export default function NutritionSummaryCard({
   onDeleteMeal,
 }: NutritionSummaryCardProps) {
   const caloriePercentage = calorieTarget > 0 ? Math.min(100, (caloriesLogged / calorieTarget) * 100) : 0;
-
-  // Hardcoded macro sample data
-  const proteinCurrent = 92;
-  const proteinTarget = 160;
-  const carbsCurrent = 110;
-  const carbsTarget = 220;
-  const fatsCurrent = 40;
-  const fatsTarget = 70;
+  const caloriesRemaining = Math.max(0, calorieTarget - caloriesLogged);
 
   return (
     <div className="glass-card p-6 transition-all duration-200">
       <h3 className="text-lg font-bold text-white">Nutrition Summary</h3>
 
-      {/* Calorie display */}
+      {/* Calorie display - shows remaining */}
       <div className="mt-4">
         <div className="flex items-baseline gap-2">
-          <span className="text-3xl font-bold text-white">{caloriesLogged}</span>
-          <span className="text-lg font-medium text-slate-500">/ {calorieTarget} kcal</span>
+          <span className="text-3xl font-bold text-white">{caloriesRemaining}</span>
+          <span className="text-lg font-medium text-slate-500">kcal remaining</span>
         </div>
+        <p className="mt-1 text-xs text-slate-500">{caloriesLogged} of {calorieTarget} kcal consumed</p>
 
         {/* Progress bar */}
         <div className="relative mt-3 h-3 overflow-hidden rounded-full bg-slate-800/50">
@@ -63,24 +63,24 @@ export default function NutritionSummaryCard({
         </div>
       </div>
 
-      {/* Macro breakdown */}
+      {/* Macro breakdown - daily targets */}
       <div className="mt-5 flex items-center gap-6 text-xs">
         <div className="flex items-center gap-2">
           <div className="h-2.5 w-2.5 rounded-full bg-purple-400" />
           <span className="font-medium text-slate-400">
-            Protein <span className="font-bold text-white">{proteinCurrent}</span> / {proteinTarget}g
+            Protein <span className="font-bold text-white">{proteinTarget}g</span>
           </span>
         </div>
         <div className="flex items-center gap-2">
           <div className="h-2.5 w-2.5 rounded-full bg-blue-400" />
           <span className="font-medium text-slate-400">
-            Carbs <span className="font-bold text-white">{carbsCurrent}</span> / {carbsTarget}g
+            Carbs <span className="font-bold text-white">{carbsTarget}g</span>
           </span>
         </div>
         <div className="flex items-center gap-2">
           <div className="h-2.5 w-2.5 rounded-full bg-cyan-400" />
           <span className="font-medium text-slate-400">
-            Fats <span className="font-bold text-white">{fatsCurrent}</span> / {fatsTarget}g
+            Fats <span className="font-bold text-white">{fatTarget}g</span>
           </span>
         </div>
       </div>

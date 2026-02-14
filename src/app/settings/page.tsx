@@ -335,7 +335,7 @@ export default function SettingsPage() {
           Settings
         </h1>
         <p className="mt-1 text-sm text-slate-500">
-          Manage how CoachIE contacts you and updates your plan.
+          Manage how Motivo contacts you and updates your plan.
         </p>
 
         <div className="mt-6 space-y-6">

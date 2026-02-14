@@ -18,9 +18,12 @@ export interface ClientProfileInput {
   equipment: "none" | "home_gym" | "commercial_gym";
   estimatedSteps: string;
 
-  // calories
+  // calories & macros
   calorieTarget?: number;
   calorie_target: number;
+  protein_target?: number;
+  carbs_target?: number;
+  fat_target?: number;
 
   // 🆕 contact + SMS fields
   phone_number?: string | null;
@@ -51,6 +54,9 @@ export async function saveClientProfile(
       weight_kg: profile.weight_kg,
 
       calorie_target: profile.calorie_target,
+      protein_target: profile.protein_target ?? null,
+      carbs_target: profile.carbs_target ?? null,
+      fat_target: profile.fat_target ?? null,
 
       goal_type: profile.goalType,
       goal_weight_kg: profile.goalWeight_kg,

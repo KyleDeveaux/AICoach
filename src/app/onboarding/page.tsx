@@ -7,7 +7,7 @@ import Link from "next/link";
 import { supabase } from "../lib/supabaseClient";
 import type { InitialPlanResponse } from "../lib/types";
 import { saveClientProfile } from "../lib/saveClientProfile";
-import { DailyCalorieNeeds } from "../lib/macros";
+import { DailyCalorieNeeds, calculateMacros } from "../lib/macros";
 import { normalizePhoneNumberToE164 } from "../lib/utils";
 
 type GoalType = "lose_weight" | "gain_muscle" | "recomp";
@@ -618,15 +618,34 @@ export default function OnboardingPage() {
               </label>
 
               {form.photoFile && !form.photoAnalysis && (
-                <button
-                  type="button"
-                  onClick={handlePhotoAnalysis}
-                  disabled={form.photoAnalysisLoading}
-                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 via-blue-600 to-cyan-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:shadow-purple-500/50 disabled:opacity-50"
-                >
-                  {form.photoAnalysisLoading && <Spinner size={14} />}
-                  <span>{form.photoAnalysisLoading ? "Analyzing..." : "Analyze photo"}</span>
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={handlePhotoAnalysis}
+                    disabled={form.photoAnalysisLoading}
+                    className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 via-blue-600 to-cyan-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:shadow-purple-500/50 disabled:opacity-50"
+                  >
+                    {form.photoAnalysisLoading && <Spinner size={14} />}
+                    <span>{form.photoAnalysisLoading ? "Analyzing..." : "Analyze photo"}</span>
+                  </button>
+                  {!form.photoAnalysisLoading && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setForm((p) => ({
+                          ...p,
+                          photoFile: null,
+                          photoPreviewUrl: null,
+                          photoAnalysis: null,
+                          photoAnalysisError: null,
+                        }));
+                      }}
+                      className="rounded-xl border border-slate-600 px-4 py-3 text-sm font-medium text-slate-400 transition hover:border-slate-500 hover:text-slate-300"
+                    >
+                      Remove photo
+                    </button>
+                  )}
+                </>
               )}
             </div>
 
@@ -862,11 +881,19 @@ export default function OnboardingPage() {
 
     calorieTarget = Math.round(calorieTarget / 50) * 50;
 
-    const macroTargets = { calorieTarget: Math.round(calorieTarget) };
+    // Calculate full macro targets based on calories, weight, and goal
+    const macroTargets = calculateMacros(
+      Math.round(calorieTarget),
+      clientProfileBase.weight_kg,
+      clientProfileBase.goalType
+    );
 
     const clientProfileForDb = {
       ...clientProfileBase,
       calorie_target: macroTargets.calorieTarget,
+      protein_target: macroTargets.proteinTarget,
+      carbs_target: macroTargets.carbsTarget,
+      fat_target: macroTargets.fatTarget,
     };
 
     const callAnswers = {
@@ -1084,7 +1111,11 @@ export default function OnboardingPage() {
                 <button
                   type="button"
                   onClick={handleNext}
-                  disabled={loading}
+                  disabled={
+                    loading ||
+                    // Disable Next when photo is uploaded but not yet analyzed
+                    (step.id === "photo-upload" && !!form.photoFile && !form.photoAnalysis)
+                  }
                   className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-purple-600 via-blue-600 to-cyan-600 px-6 py-2.5 text-sm font-bold text-white shadow-lg shadow-purple-500/30 transition hover:shadow-purple-500/50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {loading && <Spinner size={14} />}
