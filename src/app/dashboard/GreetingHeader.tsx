@@ -4,6 +4,7 @@ type GreetingHeaderProps = {
   firstName: string;
   streakCount: number;
   onOpenWeeklyRecap: () => void;
+  showWeeklyRecap?: boolean;
 };
 
 function getGreeting(): string {
@@ -17,6 +18,7 @@ export default function GreetingHeader({
   firstName,
   streakCount,
   onOpenWeeklyRecap,
+  showWeeklyRecap = true,
 }: GreetingHeaderProps) {
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -34,16 +36,18 @@ export default function GreetingHeader({
           </span>
         </div>
 
-        <button
-          type="button"
-          onClick={onOpenWeeklyRecap}
-          className="flex items-center gap-2 rounded-lg border border-white/5 bg-slate-800/50 px-4 py-2 text-sm font-bold text-slate-400 transition-all duration-200 hover:bg-slate-700/50"
-        >
-          Weekly Recap
-          <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
+        {showWeeklyRecap && (
+          <button
+            type="button"
+            onClick={onOpenWeeklyRecap}
+            className="flex items-center gap-2 rounded-lg border border-white/5 bg-slate-800/50 px-4 py-2 text-sm font-bold text-slate-400 transition-all duration-200 hover:bg-slate-700/50"
+          >
+            Weekly Recap
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        )}
       </div>
     </div>
   );

@@ -37,6 +37,9 @@ export default function Home() {
             <a href="#how-it-works" className="text-sm font-medium text-slate-400 transition hover:text-white">
               How it works
             </a>
+            <Link href="/pricing" className="text-sm font-medium text-slate-400 transition hover:text-white">
+              Pricing
+            </Link>
             <a href="#results" className="text-sm font-medium text-slate-400 transition hover:text-white">
               Results
             </a>
@@ -528,6 +531,7 @@ export default function Home() {
             <div className="flex flex-wrap gap-8 text-sm">
               <a href="#features" className="text-slate-400 transition hover:text-white">Features</a>
               <a href="#how-it-works" className="text-slate-400 transition hover:text-white">How it works</a>
+              <Link href="/pricing" className="text-slate-400 transition hover:text-white">Pricing</Link>
               <a href="#results" className="text-slate-400 transition hover:text-white">Results</a>
               <Link href="/login" className="text-slate-400 transition hover:text-white">Login</Link>
             </div>

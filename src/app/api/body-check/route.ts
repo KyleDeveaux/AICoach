@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createSupabaseServerClient } from "@/app/lib/supabaseServer"; // <- your async helper
+import { checkUsageLimit, incrementUsage } from "@/app/lib/featureGating";
 
 export const runtime = "nodejs";
 
@@ -111,6 +112,20 @@ export async function POST(req: NextRequest) {
     }
 
     const profileId = profile.id as string;
+
+    // ✅ Feature gating: check if user can use AI photo analysis
+    const usageCheck = await checkUsageLimit(profileId, "ai_photo_analyses", supabase);
+    if (!usageCheck.allowed) {
+      return NextResponse.json(
+        {
+          error: usageCheck.reason || "Usage limit reached",
+          upgradeRequired: true,
+          used: usageCheck.used,
+          limit: usageCheck.limit,
+        },
+        { status: 403 }
+      );
+    }
 
     // ----- 1) Upload image to Supabase Storage (RLS enforced) -----
     const bytes = await file.arrayBuffer();
@@ -241,6 +256,9 @@ Rules:
       console.error("[body-check] Update profile focus error:", focusUpdateError);
       // still return analysis
     }
+
+    // ✅ Increment usage counter after successful analysis
+    await incrementUsage(profileId, "ai_photo_analyses", supabase);
 
     return NextResponse.json({
       analysis,

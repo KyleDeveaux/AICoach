@@ -99,6 +99,12 @@ export interface ClientProfile {
   sms_phone_number?: string | null;
   allow_sms_checkins?: boolean | null;
   sms_checkins_enabled?: boolean | null;
+
+  // ✅ Subscription fields
+  subscription_tier?: SubscriptionTier;
+  subscription_status?: SubscriptionStatus;
+  stripe_customer_id?: string | null;
+  trial_used?: boolean;
 }
 
 // ──────────────────────────
@@ -371,3 +377,117 @@ export type ActivityLogInsert = {
   intensity: ActivityIntensity;
   notes?: string | null;
 };
+
+// ──────────────────────────
+// Subscription & Billing
+// ──────────────────────────
+
+export type SubscriptionTier = "free" | "pro" | "elite";
+
+export type SubscriptionStatus =
+  | "active"
+  | "trialing"
+  | "past_due"
+  | "canceled"
+  | "incomplete"
+  | "grandfathered";
+
+export type BillingInterval = "month" | "year";
+
+export interface Subscription {
+  id: string;
+  profile_id: string;
+  user_id: string;
+  stripe_customer_id: string;
+  stripe_subscription_id: string | null;
+  stripe_price_id: string | null;
+  tier: SubscriptionTier;
+  status: SubscriptionStatus;
+  billing_interval: BillingInterval | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  trial_start: string | null;
+  trial_end: string | null;
+  canceled_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UsageTracking {
+  id: string;
+  profile_id: string;
+  period_start: string;
+  period_end: string;
+  ai_photo_analyses_used: number;
+  ai_summaries_generated: number;
+  ai_workout_feedback_used: number;
+  ai_plan_regenerations_used: number;
+  ai_coach_calls_used: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TierLimits {
+  tier: SubscriptionTier;
+  // Metered features (0 = none, -1 = unlimited)
+  ai_photo_analyses_per_month: number;
+  ai_summaries_per_week: number;
+  ai_plan_regenerations_per_month: number;
+  ai_coach_calls_per_month: number;
+  // Boolean features
+  coaching_access: boolean; // Access to coaching tab and cards
+  ai_workout_generation: boolean; // AI-generated workouts vs manual only
+  ai_workout_feedback: boolean;
+  sms_checkins: boolean;
+  ads_enabled: boolean;
+  data_export: boolean;
+  advanced_analytics: boolean;
+}
+
+export interface SubscriptionWithUsage {
+  subscription: Subscription | null;
+  usage: UsageTracking | null;
+  limits: TierLimits;
+  tier: SubscriptionTier;
+  isTrialing: boolean;
+  trialDaysRemaining: number;
+}
+
+export interface PricingTier {
+  id: SubscriptionTier;
+  name: string;
+  description: string;
+  monthlyPrice: number;
+  annualPrice: number;
+  features: string[];
+  highlighted?: boolean;
+  stripePriceIds: {
+    monthly: string;
+    annual: string;
+  };
+}
+
+// ──────────────────────────
+// Custom Workouts
+// ──────────────────────────
+
+export interface CustomWorkout {
+  id: string;
+  profile_id: string;
+  name: string;
+  description: string | null;
+  exercises: WorkoutExercise[];
+  is_template: boolean;
+  estimated_duration_minutes: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type CustomWorkoutInsert = Omit<
+  CustomWorkout,
+  "id" | "created_at" | "updated_at"
+>;
+
+export type CustomWorkoutUpdate = Partial<
+  Omit<CustomWorkoutInsert, "profile_id">
+>;

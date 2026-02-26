@@ -4,6 +4,8 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { supabaseAdmin } from "../../../lib/supabaseAdmin";
 import { sendSms, getTwilioFromNumber } from "../../../lib/twilioServer";
+import { canUseFeature } from "../../../lib/featureGating";
+import type { SubscriptionTier } from "../../../lib/types";
 
 export const runtime = "nodejs";
 
@@ -84,6 +86,25 @@ export async function POST(req: Request) {
     if (profileError || !profile) {
       console.error("opt-in: profile lookup failed:", profileError?.message);
       return jsonError("Profile not found", 404);
+    }
+
+    // ✅ Feature gating: check if user's tier allows SMS check-ins
+    const { data: profileWithTier } = await supabase
+      .from("client_profiles")
+      .select("subscription_tier")
+      .eq("id", profileId)
+      .single();
+
+    const tier = (profileWithTier?.subscription_tier as SubscriptionTier) || "free";
+    if (!canUseFeature(tier, "sms_checkins")) {
+      return NextResponse.json(
+        {
+          error: "SMS check-ins require a Pro or Elite subscription",
+          upgradeRequired: true,
+          requiredTier: "pro",
+        },
+        { status: 403 }
+      );
     }
 
     const candidatePhone =
