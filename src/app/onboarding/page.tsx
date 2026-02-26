@@ -5,10 +5,11 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../lib/supabaseClient";
-import type { InitialPlanResponse } from "../lib/types";
+import type { InitialPlanResponse, SubscriptionTier, BillingInterval } from "../lib/types";
 import { saveClientProfile } from "../lib/saveClientProfile";
-import { DailyCalorieNeeds } from "../lib/macros";
+import { DailyCalorieNeeds, calculateMacros } from "../lib/macros";
 import { normalizePhoneNumberToE164 } from "../lib/utils";
+import { PRICING_TIERS } from "../lib/pricingData";
 
 type GoalType = "lose_weight" | "gain_muscle" | "recomp";
 
@@ -179,6 +180,8 @@ export default function OnboardingPage() {
 
   const [savedProfileId, setSavedProfileId] = useState<string | null>(null);
   const [savedPayload, setSavedPayload] = useState<any>(null);
+  const [showUpsell, setShowUpsell] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState<SubscriptionTier | null>(null);
 
   function updateField<K extends keyof ClientProfileFormState>(
     key: K,
@@ -618,15 +621,34 @@ export default function OnboardingPage() {
               </label>
 
               {form.photoFile && !form.photoAnalysis && (
-                <button
-                  type="button"
-                  onClick={handlePhotoAnalysis}
-                  disabled={form.photoAnalysisLoading}
-                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 via-blue-600 to-cyan-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:shadow-purple-500/50 disabled:opacity-50"
-                >
-                  {form.photoAnalysisLoading && <Spinner size={14} />}
-                  <span>{form.photoAnalysisLoading ? "Analyzing..." : "Analyze photo"}</span>
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={handlePhotoAnalysis}
+                    disabled={form.photoAnalysisLoading}
+                    className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-purple-600 via-blue-600 to-cyan-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:shadow-purple-500/50 disabled:opacity-50"
+                  >
+                    {form.photoAnalysisLoading && <Spinner size={14} />}
+                    <span>{form.photoAnalysisLoading ? "Analyzing..." : "Analyze photo"}</span>
+                  </button>
+                  {!form.photoAnalysisLoading && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setForm((p) => ({
+                          ...p,
+                          photoFile: null,
+                          photoPreviewUrl: null,
+                          photoAnalysis: null,
+                          photoAnalysisError: null,
+                        }));
+                      }}
+                      className="rounded-xl border border-slate-600 px-4 py-3 text-sm font-medium text-slate-400 transition hover:border-slate-500 hover:text-slate-300"
+                    >
+                      Remove photo
+                    </button>
+                  )}
+                </>
               )}
             </div>
 
@@ -862,11 +884,19 @@ export default function OnboardingPage() {
 
     calorieTarget = Math.round(calorieTarget / 50) * 50;
 
-    const macroTargets = { calorieTarget: Math.round(calorieTarget) };
+    // Calculate full macro targets based on calories, weight, and goal
+    const macroTargets = calculateMacros(
+      Math.round(calorieTarget),
+      clientProfileBase.weight_kg,
+      clientProfileBase.goalType
+    );
 
     const clientProfileForDb = {
       ...clientProfileBase,
       calorie_target: macroTargets.calorieTarget,
+      protein_target: macroTargets.proteinTarget,
+      carbs_target: macroTargets.carbsTarget,
+      fat_target: macroTargets.fatTarget,
     };
 
     const callAnswers = {
@@ -968,13 +998,49 @@ export default function OnboardingPage() {
       const data = (await res.json()) as InitialPlanResponse;
       setPlan(data);
 
-      router.push("/dashboard");
+      // Show upsell step instead of immediately redirecting
+      setShowUpsell(true);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Something went wrong";
       setError(message);
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleStartTrial(tier: Exclude<SubscriptionTier, "free">, interval: BillingInterval = "month") {
+    setCheckoutLoading(tier);
+    try {
+      // Build success/cancel URLs that route to dashboard after checkout
+      const baseUrl = window.location.origin;
+      const successUrl = `${baseUrl}/dashboard?welcome=true&subscribed=${tier}`;
+      const cancelUrl = `${baseUrl}/onboarding?canceled=true`;
+
+      const res = await fetch("/api/stripe/create-checkout-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tier, interval, successUrl, cancelUrl }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to start checkout");
+      }
+
+      const { url } = await res.json();
+      if (url) {
+        window.location.href = url;
+      }
+    } catch (err) {
+      console.error("Checkout error:", err);
+      setError(err instanceof Error ? err.message : "Failed to start trial");
+    } finally {
+      setCheckoutLoading(null);
+    }
+  }
+
+  function handleContinueFree() {
+    router.push("/dashboard");
   }
 
   function handleNext() {
@@ -997,6 +1063,171 @@ export default function OnboardingPage() {
       setCurrentStep((s) => s - 1);
       setError(null);
     }
+  }
+
+  // Upsell screen after plan generation
+  if (showUpsell) {
+    const proTier = PRICING_TIERS.find((t) => t.id === "pro")!;
+    const eliteTier = PRICING_TIERS.find((t) => t.id === "elite")!;
+
+    return (
+      <main className="min-h-screen bg-slate-950 text-slate-50">
+        {/* Animated background gradients */}
+        <div className="pointer-events-none fixed inset-0 overflow-hidden">
+          <div className="absolute -top-40 -right-40 h-80 w-80 rounded-full bg-purple-600/20 blur-3xl" />
+          <div className="absolute top-1/3 -left-40 h-96 w-96 rounded-full bg-blue-600/20 blur-3xl" />
+          <div className="absolute bottom-20 right-1/4 h-80 w-80 rounded-full bg-cyan-600/20 blur-3xl" />
+        </div>
+
+        <header className="relative z-10 border-b border-white/5 bg-slate-950/80 backdrop-blur-xl">
+          <div className="mx-auto flex max-w-4xl items-center justify-center px-6 py-4">
+            <Link href="/" className="group flex items-center gap-3">
+              <div className="relative">
+                <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-purple-500 via-blue-500 to-cyan-500 opacity-75 blur-md transition group-hover:opacity-100" />
+                <div className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-purple-600 via-blue-600 to-cyan-600 shadow-lg">
+                  <span className="text-base font-black text-white">M</span>
+                </div>
+              </div>
+              <div>
+                <h1 className="text-lg font-black tracking-tight">
+                  Moti<span className="bg-gradient-to-r from-purple-400 via-blue-400 to-cyan-400 bg-clip-text text-transparent">vo</span>
+                </h1>
+              </div>
+            </Link>
+          </div>
+        </header>
+
+        <div className="relative z-10 mx-auto max-w-4xl px-6 pb-12 pt-8 md:pt-12">
+          {/* Success message */}
+          <div className="mb-8 text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-green-500/20 to-emerald-500/20 border border-green-500/30">
+              <svg className="h-8 w-8 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <h2 className="text-2xl font-bold text-white md:text-3xl">Your plan is ready, {form.first_name}!</h2>
+            <p className="mt-2 text-slate-400">
+              Your personalized workout and nutrition plan has been created.
+            </p>
+          </div>
+
+          {/* Upsell section */}
+          <div className="mb-6 text-center">
+            <h3 className="text-xl font-bold text-white">Unlock the full Motivo experience</h3>
+            <p className="mt-2 text-sm text-slate-400">
+              Get AI coaching, SMS check-ins, and more with a 7-day free trial.
+            </p>
+          </div>
+
+          {/* Pricing cards */}
+          <div className="grid gap-6 md:grid-cols-2">
+            {/* Pro Card */}
+            <div className="relative rounded-2xl border border-purple-500/30 bg-gradient-to-b from-purple-500/10 to-slate-900/50 p-6">
+              <div className="absolute -top-3 left-1/2 -translate-x-1/2">
+                <span className="rounded-full bg-gradient-to-r from-purple-600 to-blue-600 px-3 py-1 text-xs font-bold text-white">
+                  Most Popular
+                </span>
+              </div>
+
+              <div className="mt-2">
+                <h4 className="text-lg font-bold text-white">{proTier.name}</h4>
+                <p className="mt-1 text-sm text-slate-400">{proTier.description}</p>
+              </div>
+
+              <div className="mt-4 flex items-baseline gap-2">
+                <span className="text-3xl font-black text-white">${proTier.monthlyPrice}</span>
+                <span className="text-slate-500">/month</span>
+              </div>
+
+              <ul className="mt-4 space-y-2">
+                {proTier.features.slice(0, 5).map((feature) => (
+                  <li key={feature} className="flex items-start gap-2 text-sm">
+                    <svg className="mt-0.5 h-4 w-4 flex-shrink-0 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="text-slate-300">{feature}</span>
+                  </li>
+                ))}
+              </ul>
+
+              <button
+                onClick={() => handleStartTrial("pro")}
+                disabled={checkoutLoading !== null}
+                className="mt-6 w-full rounded-xl bg-gradient-to-r from-purple-600 via-blue-600 to-cyan-600 py-3 text-sm font-bold text-white shadow-lg transition hover:shadow-purple-500/30 disabled:opacity-50"
+              >
+                {checkoutLoading === "pro" ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <Spinner size={14} />
+                    Processing...
+                  </span>
+                ) : (
+                  "Start 7-Day Free Trial"
+                )}
+              </button>
+            </div>
+
+            {/* Elite Card */}
+            <div className="relative rounded-2xl border border-white/10 bg-white/5 p-6">
+              <div className="mt-2">
+                <h4 className="text-lg font-bold text-white">{eliteTier.name}</h4>
+                <p className="mt-1 text-sm text-slate-400">{eliteTier.description}</p>
+              </div>
+
+              <div className="mt-4 flex items-baseline gap-2">
+                <span className="text-3xl font-black text-white">${eliteTier.monthlyPrice}</span>
+                <span className="text-slate-500">/month</span>
+              </div>
+
+              <ul className="mt-4 space-y-2">
+                {eliteTier.features.slice(0, 5).map((feature) => (
+                  <li key={feature} className="flex items-start gap-2 text-sm">
+                    <svg className="mt-0.5 h-4 w-4 flex-shrink-0 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="text-slate-300">{feature}</span>
+                  </li>
+                ))}
+              </ul>
+
+              <button
+                onClick={() => handleStartTrial("elite")}
+                disabled={checkoutLoading !== null}
+                className="mt-6 w-full rounded-xl border border-white/20 py-3 text-sm font-bold text-white transition hover:bg-white/10 disabled:opacity-50"
+              >
+                {checkoutLoading === "elite" ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <Spinner size={14} />
+                    Processing...
+                  </span>
+                ) : (
+                  "Start 7-Day Free Trial"
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Continue free option */}
+          <div className="mt-8 text-center">
+            <button
+              onClick={handleContinueFree}
+              disabled={checkoutLoading !== null}
+              className="text-sm text-slate-400 underline-offset-4 hover:text-white hover:underline disabled:opacity-50"
+            >
+              Continue with Free plan
+            </button>
+            <p className="mt-2 text-xs text-slate-500">
+              You can upgrade anytime from your dashboard.
+            </p>
+          </div>
+
+          {error && (
+            <div className="mt-6 rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-center">
+              <p className="text-sm text-red-400">{error}</p>
+            </div>
+          )}
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -1084,7 +1315,11 @@ export default function OnboardingPage() {
                 <button
                   type="button"
                   onClick={handleNext}
-                  disabled={loading}
+                  disabled={
+                    loading ||
+                    // Disable Next when photo is uploaded but not yet analyzed
+                    (step.id === "photo-upload" && !!form.photoFile && !form.photoAnalysis)
+                  }
                   className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-purple-600 via-blue-600 to-cyan-600 px-6 py-2.5 text-sm font-bold text-white shadow-lg shadow-purple-500/30 transition hover:shadow-purple-500/50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {loading && <Spinner size={14} />}

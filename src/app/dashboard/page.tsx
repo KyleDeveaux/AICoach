@@ -34,6 +34,7 @@ import TodaysWorkoutCard from "./TodaysWorkoutCard";
 import BodyCheckCard from "./BodyCheckCard";
 import CoachingCard from "./CoachingCard";
 import WeeklyInsightsBar from "./WeeklyInsightsBar";
+import { useSubscription } from "../lib/useSubscription";
 
 type WeekDayInfo = {
   dayName: string;
@@ -82,6 +83,10 @@ export default function DashboardPage() {
 
   // ✅ NEW: top-level dashboard loader (prevents blank flash)
   const [isDashboardLoading, setIsDashboardLoading] = useState(true);
+
+  // Subscription state - loaded at top level to prevent UI flash
+  const { loading: subscriptionLoading, tier } = useSubscription();
+  const isFreeUser = tier === "free";
 
   const [weeklySummary, setWeeklySummary] =
     useState<WeeklySummaryResponse | null>(null);
@@ -738,6 +743,9 @@ async function handleGenerateWeeklySummary() {
 
 
   const calorieTarget = profile?.calorie_target ?? 0;
+  const proteinTarget = profile?.protein_target ?? 0;
+  const carbsTarget = profile?.carbs_target ?? 0;
+  const fatTarget = profile?.fat_target ?? 0;
 
   // Auto-set "hit calorie goal" to No when logged calories exceed the target
   useEffect(() => {
@@ -792,7 +800,7 @@ async function handleGenerateWeeklySummary() {
     ? "Great check-in! Now log your first meal to track calories"
     : "You're making progress! Stay consistent and keep going";
 
-  if (isDashboardLoading || !profile) {
+  if (isDashboardLoading || subscriptionLoading || !profile) {
     return (
       <main className="min-h-screen bg-slate-950 text-white">
         <div className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4">
@@ -878,85 +886,163 @@ async function handleGenerateWeeklySummary() {
             firstName={profile.first_name ?? ""}
             streakCount={streakCount}
             onOpenWeeklyRecap={handleGenerateWeeklySummary}
+            showWeeklyRecap={!isFreeUser}
           />
 
-          {/* Row 1: Score + Next Step */}
-          <div className="grid gap-6 lg:grid-cols-[2fr_3fr]">
-            <TodaysScoreCard
-              didWorkout={didWorkoutToday ?? savedTodayWorkout}
-              hitCalories={hitCaloriesToday ?? savedTodayCalories}
-              score={todaysScore}
-            />
-            <YourNextStepCard
-              suggestion={nextStepSuggestion}
-              coachTip={weeklySummary?.accountabilityMessage ?? null}
-              onLogWorkout={() => router.push("/plan")}
-              onLogFood={() => {}}
-              onQuickCheckin={() => {}}
-            />
-          </div>
+          {/* FREE TIER LAYOUT - Clean 2-column grid */}
+          {isFreeUser ? (
+            <>
+              {/* Row 1: Score + Workout side by side */}
+              <div className="grid gap-6 md:grid-cols-2">
+                <TodaysScoreCard
+                  didWorkout={didWorkoutToday ?? savedTodayWorkout}
+                  hitCalories={hitCaloriesToday ?? savedTodayCalories}
+                  score={todaysScore}
+                />
+                <TodaysWorkoutCard
+                  selectedWorkout={selectedWorkout}
+                  onStartWorkout={() => router.push("/workout")}
+                  onViewPlan={() => router.push("/workout")}
+                />
+              </div>
 
-          {/* Row 2: Check-In + Nutrition */}
-          <div className="grid gap-6 lg:grid-cols-[2fr_3fr]">
-            <DailyCheckinCard
-              didWorkout={didWorkoutToday}
-              setDidWorkout={setDidWorkoutToday}
-              hitCalories={hitCaloriesToday}
-              setHitCalories={setHitCaloriesToday}
-              caloriesExceeded={calorieTarget > 0 && caloriesLogged > calorieTarget}
-              workoutRating={workoutRating}
-              setWorkoutRating={setWorkoutRating}
-              notes={checkinNotes}
-              setNotes={setCheckinNotes}
-              message={checkinMessage}
-              isLoading={checkinLoading}
-              onSave={handleSaveCheckin}
-              onBackfill={() => {
-                setIsBackfillMode(true);
-                const lastPastDay =
-                  pastOrTodayDaysThisWeek
-                    .filter((d) => d.isoDate < todayIso)
-                    .slice(-1)[0]?.isoDate ?? todayIso;
-                setCheckinDate(lastPastDay);
-                setIsCheckinOpen(true);
-                setCheckinMessage(null);
-                setDidWorkoutToday(null);
-                setHitCaloriesToday(null);
-                setWorkoutRating(null);
-                setCheckinNotes("");
-              }}
-              canBackfill={canBackfill}
-              hasExistingCheckin={savedTodayWorkout !== null}
-            />
-            <NutritionSummaryCard
-              calorieTarget={calorieTarget}
-              caloriesLogged={caloriesLogged}
-              todayMeals={todayMeals}
-              newMealDescription={newMealDescription}
-              setNewMealDescription={setNewMealDescription}
-              newMealCalories={newMealCalories}
-              setNewMealCalories={setNewMealCalories}
-              newMealType={newMealType}
-              setNewMealType={setNewMealType}
-              mealSaving={mealSaving}
-              mealError={mealError}
-              onAddMeal={handleAddMeal}
-              onDeleteMeal={handleDeleteMeal}
-            />
-          </div>
+              {/* Row 2: Check-In + Nutrition */}
+              <div className="grid gap-6 md:grid-cols-2">
+                <DailyCheckinCard
+                  didWorkout={didWorkoutToday}
+                  setDidWorkout={setDidWorkoutToday}
+                  hitCalories={hitCaloriesToday}
+                  setHitCalories={setHitCaloriesToday}
+                  caloriesExceeded={calorieTarget > 0 && caloriesLogged > calorieTarget}
+                  workoutRating={workoutRating}
+                  setWorkoutRating={setWorkoutRating}
+                  notes={checkinNotes}
+                  setNotes={setCheckinNotes}
+                  message={checkinMessage}
+                  isLoading={checkinLoading}
+                  onSave={handleSaveCheckin}
+                  onBackfill={() => {
+                    setIsBackfillMode(true);
+                    const lastPastDay =
+                      pastOrTodayDaysThisWeek
+                        .filter((d) => d.isoDate < todayIso)
+                        .slice(-1)[0]?.isoDate ?? todayIso;
+                    setCheckinDate(lastPastDay);
+                    setIsCheckinOpen(true);
+                    setCheckinMessage(null);
+                    setDidWorkoutToday(null);
+                    setHitCaloriesToday(null);
+                    setWorkoutRating(null);
+                    setCheckinNotes("");
+                  }}
+                  canBackfill={canBackfill}
+                  hasExistingCheckin={savedTodayWorkout !== null}
+                />
+                <NutritionSummaryCard
+                  calorieTarget={calorieTarget}
+                  caloriesLogged={caloriesLogged}
+                  proteinTarget={proteinTarget}
+                  carbsTarget={carbsTarget}
+                  fatTarget={fatTarget}
+                  todayMeals={todayMeals}
+                  newMealDescription={newMealDescription}
+                  setNewMealDescription={setNewMealDescription}
+                  newMealCalories={newMealCalories}
+                  setNewMealCalories={setNewMealCalories}
+                  newMealType={newMealType}
+                  setNewMealType={setNewMealType}
+                  mealSaving={mealSaving}
+                  mealError={mealError}
+                  onAddMeal={handleAddMeal}
+                  onDeleteMeal={handleDeleteMeal}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              {/* PAID TIER LAYOUT */}
+              {/* Row 1: Score + Next Step */}
+              <div className="grid gap-6 lg:grid-cols-[2fr_3fr]">
+                <TodaysScoreCard
+                  didWorkout={didWorkoutToday ?? savedTodayWorkout}
+                  hitCalories={hitCaloriesToday ?? savedTodayCalories}
+                  score={todaysScore}
+                />
+                <YourNextStepCard
+                  suggestion={nextStepSuggestion}
+                  coachTip={weeklySummary?.accountabilityMessage ?? null}
+                  onLogWorkout={() => router.push("/workout")}
+                  onLogFood={() => {}}
+                  onQuickCheckin={() => {}}
+                />
+              </div>
 
-          {/* Row 3: Workout + [Body Check, Coaching] */}
-          <div className="grid gap-6 lg:grid-cols-[2fr_3fr]">
-            <TodaysWorkoutCard
-              selectedWorkout={selectedWorkout}
-              onStartWorkout={() => router.push("/plan")}
-              onViewPlan={() => router.push("/plan")}
-            />
-            <div className="grid gap-6 sm:grid-cols-2">
-              <BodyCheckCard lastCheckDate={lastBodyCheckDate} latestPhotoUrl={latestBodyCheckUrl} />
-              <CoachingCard smsActive={!!profile} />
-            </div>
-          </div>
+              {/* Row 2: Check-In + Nutrition */}
+              <div className="grid gap-6 lg:grid-cols-[2fr_3fr]">
+                <DailyCheckinCard
+                  didWorkout={didWorkoutToday}
+                  setDidWorkout={setDidWorkoutToday}
+                  hitCalories={hitCaloriesToday}
+                  setHitCalories={setHitCaloriesToday}
+                  caloriesExceeded={calorieTarget > 0 && caloriesLogged > calorieTarget}
+                  workoutRating={workoutRating}
+                  setWorkoutRating={setWorkoutRating}
+                  notes={checkinNotes}
+                  setNotes={setCheckinNotes}
+                  message={checkinMessage}
+                  isLoading={checkinLoading}
+                  onSave={handleSaveCheckin}
+                  onBackfill={() => {
+                    setIsBackfillMode(true);
+                    const lastPastDay =
+                      pastOrTodayDaysThisWeek
+                        .filter((d) => d.isoDate < todayIso)
+                        .slice(-1)[0]?.isoDate ?? todayIso;
+                    setCheckinDate(lastPastDay);
+                    setIsCheckinOpen(true);
+                    setCheckinMessage(null);
+                    setDidWorkoutToday(null);
+                    setHitCaloriesToday(null);
+                    setWorkoutRating(null);
+                    setCheckinNotes("");
+                  }}
+                  canBackfill={canBackfill}
+                  hasExistingCheckin={savedTodayWorkout !== null}
+                />
+                <NutritionSummaryCard
+                  calorieTarget={calorieTarget}
+                  caloriesLogged={caloriesLogged}
+                  proteinTarget={proteinTarget}
+                  carbsTarget={carbsTarget}
+                  fatTarget={fatTarget}
+                  todayMeals={todayMeals}
+                  newMealDescription={newMealDescription}
+                  setNewMealDescription={setNewMealDescription}
+                  newMealCalories={newMealCalories}
+                  setNewMealCalories={setNewMealCalories}
+                  newMealType={newMealType}
+                  setNewMealType={setNewMealType}
+                  mealSaving={mealSaving}
+                  mealError={mealError}
+                  onAddMeal={handleAddMeal}
+                  onDeleteMeal={handleDeleteMeal}
+                />
+              </div>
+
+              {/* Row 3: Workout + [Body Check, Coaching] */}
+              <div className="grid gap-6 lg:grid-cols-[2fr_3fr]">
+                <TodaysWorkoutCard
+                  selectedWorkout={selectedWorkout}
+                  onStartWorkout={() => router.push("/workout")}
+                  onViewPlan={() => router.push("/workout")}
+                />
+                <div className="grid gap-6 sm:grid-cols-2">
+                  <BodyCheckCard lastCheckDate={lastBodyCheckDate} latestPhotoUrl={latestBodyCheckUrl} />
+                  <CoachingCard smsActive={!!profile} />
+                </div>
+              </div>
+            </>
+          )}
 
           {/* Row 4: Weekly Insights (full width) */}
           <WeeklyInsightsBar

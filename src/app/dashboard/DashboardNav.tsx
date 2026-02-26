@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
+import { useSubscription } from "../lib/useSubscription";
 import type { ClientProfile } from "../lib/types";
 import Link from "next/link";
 
@@ -17,8 +18,8 @@ const navItems = [
     ),
   },
   {
-    href: "/plan",
-    label: "Plan",
+    href: "/workout",
+    label: "Workout",
     icon: (
       <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
@@ -26,7 +27,7 @@ const navItems = [
     ),
   },
   {
-    href: "/dashboard?tab=food",
+    href: "/food",
     label: "Food",
     icon: (
       <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -63,6 +64,10 @@ export default function DashboardNav({ profile, variant = "dark" }: DashboardNav
   const pathname = usePathname();
   const router = useRouter();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const { canUse, tier } = useSubscription();
+
+  const hasCoachingAccess = canUse("coaching_access");
 
   async function handleLogout() {
     try {
@@ -88,6 +93,7 @@ export default function DashboardNav({ profile, variant = "dark" }: DashboardNav
   const isDark = variant === "dark";
 
   return (
+    <>
     <header
       className={[
         "sticky top-0 z-20 border-b backdrop-blur-sm",
@@ -111,6 +117,16 @@ export default function DashboardNav({ profile, variant = "dark" }: DashboardNav
           >
             Motivo
           </a>
+          {tier === "pro" && (
+            <span className="rounded-full bg-gradient-to-r from-purple-600 to-blue-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
+              Pro
+            </span>
+          )}
+          {tier === "elite" && (
+            <span className="rounded-full bg-gradient-to-r from-amber-500 to-orange-500 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
+              Elite
+            </span>
+          )}
         </div>
 
         {/* Tab Navigation */}
@@ -119,9 +135,44 @@ export default function DashboardNav({ profile, variant = "dark" }: DashboardNav
             const isActive =
               item.href === "/dashboard"
                 ? pathname === "/dashboard"
-                : item.href.startsWith("/dashboard?")
-                  ? false // query-based tabs need client-side search param matching
-                  : pathname?.startsWith(item.href) ?? false;
+                : pathname?.startsWith(item.href) ?? false;
+
+            // Check if this is the Coach tab and user doesn't have access
+            const isCoachTab = item.label === "Coach";
+            const isLocked = isCoachTab && !hasCoachingAccess;
+
+            if (isLocked) {
+              return (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={() => setShowUpgradeModal(true)}
+                  className={[
+                    "flex items-center gap-2 px-3 py-2 text-sm font-medium transition-all duration-200 relative",
+                    isDark
+                      ? "text-slate-600 hover:text-slate-400"
+                      : "text-slate-400 hover:text-slate-500",
+                  ].join(" ")}
+                >
+                  {item.icon}
+                  {item.label}
+                  {/* Lock icon */}
+                  <svg
+                    className="h-3 w-3 text-purple-500"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                    />
+                  </svg>
+                </button>
+              );
+            }
 
             return (
               <Link
@@ -259,6 +310,65 @@ export default function DashboardNav({ profile, variant = "dark" }: DashboardNav
           )}
         </div>
       </div>
+
     </header>
+
+      {/* Upgrade Modal for locked Coach tab - rendered outside header for proper centering */}
+      {showUpgradeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="relative mx-4 w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <button
+              onClick={() => setShowUpgradeModal(false)}
+              className="absolute right-4 top-4 text-slate-400 hover:text-slate-600"
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-purple-100 to-blue-100 mb-4">
+              <svg
+                className="h-6 w-6 text-purple-600"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+                />
+              </svg>
+            </div>
+
+            <h3 className="text-lg font-bold text-slate-900">
+              Unlock AI Coaching
+            </h3>
+
+            <p className="mt-2 text-sm text-slate-500">
+              Get personalized AI coaching with body check analyses, SMS check-ins,
+              AI workout feedback, and more. Upgrade to Pro to unlock the full coaching experience.
+            </p>
+
+            <div className="mt-6 flex gap-3">
+              <button
+                onClick={() => setShowUpgradeModal(false)}
+                className="flex-1 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
+              >
+                Maybe Later
+              </button>
+              <Link
+                href="/pricing"
+                onClick={() => setShowUpgradeModal(false)}
+                className="flex-1 rounded-lg bg-gradient-to-r from-purple-600 to-blue-600 px-4 py-2.5 text-center text-sm font-semibold text-white hover:shadow-lg transition"
+              >
+                View Plans
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
