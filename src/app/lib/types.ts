@@ -451,6 +451,10 @@ export interface SubscriptionWithUsage {
   tier: SubscriptionTier;
   isTrialing: boolean;
   trialDaysRemaining: number;
+  // Top-level display fields (always set correctly, even when subscription row is stale)
+  status: SubscriptionStatus;
+  billingInterval: BillingInterval | null;
+  currentPeriodEnd: string | null;
 }
 
 export interface PricingTier {

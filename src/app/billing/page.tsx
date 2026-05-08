@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../lib/supabaseClient";
@@ -11,6 +11,23 @@ import DashboardNav from "../dashboard/DashboardNav";
 import type { ClientProfile } from "../lib/types";
 
 export default function BillingPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-100">
+          <DashboardNav profile={null} variant="light" />
+          <div className="flex items-center justify-center py-20">
+            <div className="animate-spin h-8 w-8 border-4 border-purple-500 border-t-transparent rounded-full" />
+          </div>
+        </div>
+      }
+    >
+      <BillingPageContent />
+    </Suspense>
+  );
+}
+
+function BillingPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [profile, setProfile] = useState<ClientProfile | null>(null);
@@ -181,17 +198,17 @@ export default function BillingPage() {
                 <div>
                   <p className="text-xs text-slate-500 uppercase tracking-wide">Status</p>
                   <p className="mt-1 font-medium text-slate-900 capitalize">
-                    {subscription.subscription?.status === "active" && !isTrialing
+                    {subscription.status === "active" && !isTrialing
                       ? "Active"
                       : isTrialing
                       ? "Trial"
-                      : subscription.subscription?.status}
+                      : subscription.status}
                   </p>
                 </div>
                 <div>
                   <p className="text-xs text-slate-500 uppercase tracking-wide">Billing</p>
                   <p className="mt-1 font-medium text-slate-900 capitalize">
-                    {subscription.subscription?.billing_interval === "year" ? "Annual" : "Monthly"}
+                    {subscription.billingInterval === "year" ? "Annual" : "Monthly"}
                   </p>
                 </div>
                 <div>
@@ -201,13 +218,15 @@ export default function BillingPage() {
                   <p className="mt-1 font-medium text-slate-900">
                     {isTrialing
                       ? formatDate(subscription.subscription?.trial_end || null)
-                      : formatDate(subscription.subscription?.current_period_end || null)}
+                      : formatDate(subscription.currentPeriodEnd)}
                   </p>
                 </div>
                 <div>
                   <p className="text-xs text-slate-500 uppercase tracking-wide">Amount</p>
                   <p className="mt-1 font-medium text-slate-900">
-                    ${currentTierInfo?.monthlyPrice}/month
+                    {subscription.billingInterval === "year"
+                      ? `$${currentTierInfo?.annualPrice}/year`
+                      : `$${currentTierInfo?.monthlyPrice}/month`}
                   </p>
                 </div>
               </div>

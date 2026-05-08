@@ -1,3 +1,5 @@
+import "server-only";
+
 // lib/openai.ts
 import OpenAI from "openai";
 

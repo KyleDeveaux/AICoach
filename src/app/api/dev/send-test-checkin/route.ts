@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/app/lib/supabaseServer";
-import { twilioClient, getTwilioFromConfig } from "@/app/lib/twilioClient";
+import { getTwilioClient, getTwilioFromConfig } from "@/app/lib/twilioClient";
 
 export async function POST() {
+  if (process.env.NODE_ENV !== "development") {
+    return new Response("Not Found", { status: 404 });
+  }
+
   try {
     // ✅ Auth: must be logged in
     const supabase = await createSupabaseServerClient();
@@ -51,9 +55,9 @@ export async function POST() {
     const { messagingServiceSid, fromNumber } = getTwilioFromConfig();
 
     // 3️⃣ Actually send the SMS
-    await twilioClient.messages.create({
+    await getTwilioClient().messages.create({
       to: profile.sms_phone_number, // ✅ this is the correct field
-      body: "This is a test SMS from CoachIE 📲",
+      body: "This is a test SMS from your coach 📲",
       ...(messagingServiceSid
         ? { messagingServiceSid }
         : { from: fromNumber }),

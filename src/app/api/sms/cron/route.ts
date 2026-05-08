@@ -10,8 +10,9 @@ import {
   getTodayWorkout,
   buildWorkoutSummary,
   generateCoachSms,
-  sendAndLogSms,
+  logSmsMessage,
 } from "@/app/lib/smsHelpers";
+import { notify } from "@/app/lib/notifications/dispatcher";
 
 export const runtime = "nodejs";
 
@@ -92,16 +93,21 @@ async function processMorningReminders(
         "I'll check in tonight about how it went",
       ].join("\n");
 
-      await sendAndLogSms({
-        phone: sub.phone_e164,
-        body,
-        profileId: sub.profile_id,
-        userId: sub.user_id,
-        kind: "morning_workout",
-        extra: { checkin_date: localDate },
-      });
-
-      results.morningCount++;
+      const sendResult = await notify(sub.profile_id, { body });
+      if (sendResult.success && !sendResult.skipped) {
+        await logSmsMessage({
+          profileId: sub.profile_id,
+          userId: sub.user_id,
+          direction: "outbound",
+          from: "NOTIFIER",
+          to: sub.phone_e164,
+          body,
+          sid: sendResult.providerMessageId ?? null,
+          kind: "morning_workout",
+          extra: { checkin_date: localDate },
+        });
+        results.morningCount++;
+      }
     } catch (err: any) {
       results.errors.push(
         `morning:${sub.profile_id}:${err?.message || err}`
@@ -172,14 +178,20 @@ async function processEveningCheckins(
                 : `Still here ${firstName}! Did you stay close to your calorie target today? Yes or no?`,
           });
 
-          await sendAndLogSms({
-            phone: sub.phone_e164,
-            body: followUp,
-            profileId: sub.profile_id,
-            userId: sub.user_id,
-            kind: "checkin_followup",
-            extra: { checkin_date: localDate, stage: state.stage },
-          });
+          const followUpResult = await notify(sub.profile_id, { body: followUp });
+          if (followUpResult.success && !followUpResult.skipped) {
+            await logSmsMessage({
+              profileId: sub.profile_id,
+              userId: sub.user_id,
+              direction: "outbound",
+              from: "NOTIFIER",
+              to: sub.phone_e164,
+              body: followUp,
+              sid: followUpResult.providerMessageId ?? null,
+              kind: "checkin_followup",
+              extra: { checkin_date: localDate, stage: state.stage },
+            });
+          }
 
           await supabaseAdmin
             .from("sms_checkin_states")
@@ -208,14 +220,20 @@ async function processEveningCheckins(
           : `Hey ${firstName}, quick check-in — did you get any movement in today? A walk, stretching, anything? (yes/no)`,
       });
 
-      await sendAndLogSms({
-        phone: sub.phone_e164,
-        body: opener,
-        profileId: sub.profile_id,
-        userId: sub.user_id,
-        kind: "checkin_opener",
-        extra: { checkin_date: localDate, isWorkoutDay },
-      });
+      const openerResult = await notify(sub.profile_id, { body: opener });
+      if (openerResult.success && !openerResult.skipped) {
+        await logSmsMessage({
+          profileId: sub.profile_id,
+          userId: sub.user_id,
+          direction: "outbound",
+          from: "NOTIFIER",
+          to: sub.phone_e164,
+          body: opener,
+          sid: openerResult.providerMessageId ?? null,
+          kind: "checkin_opener",
+          extra: { checkin_date: localDate, isWorkoutDay },
+        });
+      }
 
       // Create or reset the conversation state
       await supabaseAdmin.from("sms_checkin_states").upsert(

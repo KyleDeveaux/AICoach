@@ -2,7 +2,8 @@
 
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
-import { stripe, getTierFromPriceId, getIntervalFromPriceId } from "@/app/lib/stripe";
+import { stripe, getTierFromPriceId } from "@/app/lib/stripe";
+import type { BillingInterval } from "@/app/lib/types";
 import { supabaseAdmin } from "@/app/lib/supabaseAdmin";
 import type Stripe from "stripe";
 
@@ -57,13 +58,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ received: true, skipped: true });
   }
 
-  // Record event for idempotency
-  await supabaseAdmin.from("stripe_events").insert({
-    stripe_event_id: event.id,
-    event_type: event.type,
-    payload: event.data.object as Record<string, unknown>,
-  });
-
   try {
     switch (event.type) {
       case "checkout.session.completed":
@@ -91,6 +85,13 @@ export async function POST(req: Request) {
         console.log(`[stripe/webhook] Unhandled event type: ${event.type}`);
     }
 
+    // Record event AFTER successful processing so Stripe can retry on failure
+    await supabaseAdmin.from("stripe_events").insert({
+      stripe_event_id: event.id,
+      event_type: event.type,
+      payload: event.data.object as unknown as Record<string, unknown>,
+    });
+
     return NextResponse.json({ received: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -100,6 +101,36 @@ export async function POST(req: Request) {
       { status: 500 }
     );
   }
+}
+
+// ──────────────────────────
+// Helpers
+// ──────────────────────────
+
+/** Safely convert a Unix timestamp (seconds) to ISO string, or return null */
+function safeTimestamp(ts: unknown): string | null {
+  if (typeof ts !== "number" || !isFinite(ts) || ts <= 0) return null;
+  try {
+    return new Date(ts * 1000).toISOString();
+  } catch {
+    return null;
+  }
+}
+
+/** Get billing period dates from a Stripe subscription (SDK v20+ stores dates on items) */
+function getSubPeriod(sub: Stripe.Subscription) {
+  const item = sub.items.data[0];
+  return {
+    start: safeTimestamp(item?.current_period_start),
+    end: safeTimestamp(item?.current_period_end),
+  };
+}
+
+/** Read billing interval directly from Stripe price object (ground truth) */
+function getIntervalFromStripePrice(sub: Stripe.Subscription): BillingInterval {
+  const price = sub.items.data[0]?.price;
+  if (price?.recurring?.interval === "year") return "year";
+  return "month";
 }
 
 // ──────────────────────────
@@ -128,10 +159,13 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
   const subscription = await stripe.subscriptions.retrieve(subscriptionId);
   const priceId = subscription.items.data[0]?.price.id;
   const tier = getTierFromPriceId(priceId);
-  const interval = getIntervalFromPriceId(priceId);
+  const interval = getIntervalFromStripePrice(subscription);
+  const period = getSubPeriod(subscription);
 
   // Determine status
   const status = subscription.status === "trialing" ? "trialing" : "active";
+
+  console.log(`[stripe/webhook] Checkout details: tier=${tier}, interval=${interval}, periodEnd=${period.end}`);
 
   // Create or update subscription record
   await supabaseAdmin.from("subscriptions").upsert(
@@ -144,14 +178,10 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
       tier,
       status,
       billing_interval: interval,
-      current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-      current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
-      trial_start: subscription.trial_start
-        ? new Date(subscription.trial_start * 1000).toISOString()
-        : null,
-      trial_end: subscription.trial_end
-        ? new Date(subscription.trial_end * 1000).toISOString()
-        : null,
+      current_period_start: period.start,
+      current_period_end: period.end,
+      trial_start: safeTimestamp(subscription.trial_start),
+      trial_end: safeTimestamp(subscription.trial_end),
       updated_at: new Date().toISOString(),
     },
     { onConflict: "profile_id" }
@@ -183,7 +213,7 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
   }
 
   const tier = getTierFromPriceId(priceId);
-  const interval = getIntervalFromPriceId(priceId);
+  const interval = getIntervalFromStripePrice(subscription);
 
   // Map Stripe status to our status
   let status: string;
@@ -232,6 +262,7 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
     // CREATE the subscription record (fallback for when checkout.session.completed wasn't received)
     console.log(`[stripe/webhook] Creating subscription record for profile ${profile.id}`);
 
+    const insertPeriod = getSubPeriod(subscription);
     const { error: insertError } = await supabaseAdmin.from("subscriptions").insert({
       profile_id: profile.id,
       user_id: profile.user_id,
@@ -241,14 +272,10 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
       tier,
       status,
       billing_interval: interval,
-      current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-      current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
-      trial_start: subscription.trial_start
-        ? new Date(subscription.trial_start * 1000).toISOString()
-        : null,
-      trial_end: subscription.trial_end
-        ? new Date(subscription.trial_end * 1000).toISOString()
-        : null,
+      current_period_start: insertPeriod.start,
+      current_period_end: insertPeriod.end,
+      trial_start: safeTimestamp(subscription.trial_start),
+      trial_end: safeTimestamp(subscription.trial_end),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
@@ -273,6 +300,7 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
   }
 
   // UPDATE existing subscription record
+  const updatePeriod = getSubPeriod(subscription);
   const { error: subError } = await supabaseAdmin
     .from("subscriptions")
     .update({
@@ -280,14 +308,10 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
       tier,
       status,
       billing_interval: interval,
-      current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-      current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
-      trial_end: subscription.trial_end
-        ? new Date(subscription.trial_end * 1000).toISOString()
-        : null,
-      canceled_at: subscription.canceled_at
-        ? new Date(subscription.canceled_at * 1000).toISOString()
-        : null,
+      current_period_start: updatePeriod.start,
+      current_period_end: updatePeriod.end,
+      trial_end: safeTimestamp(subscription.trial_end),
+      canceled_at: safeTimestamp(subscription.canceled_at),
       updated_at: new Date().toISOString(),
     })
     .eq("stripe_customer_id", customerId);
@@ -341,12 +365,13 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
   console.log("[stripe/webhook] Invoice paid:", invoice.id);
 
   // Only handle subscription invoices
-  if (!invoice.subscription) return;
+  const subDetails = invoice.parent?.subscription_details;
+  if (!subDetails?.subscription) return;
 
   const customerId = invoice.customer as string;
-  const subscriptionId = typeof invoice.subscription === "string"
-    ? invoice.subscription
-    : invoice.subscription.id;
+  const subscriptionId = typeof subDetails.subscription === "string"
+    ? subDetails.subscription
+    : subDetails.subscription.id;
 
   // Get the profile for this customer
   const { data: profile } = await supabaseAdmin
@@ -374,10 +399,11 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
 
     if (priceId) {
       const tier = getTierFromPriceId(priceId);
-      const interval = getIntervalFromPriceId(priceId);
+      const interval = getIntervalFromStripePrice(subscription);
       const status = subscription.status === "trialing" ? "trialing" : "active";
+      const invPeriod = getSubPeriod(subscription);
 
-      console.log(`[stripe/webhook] Creating subscription record from invoice.paid for profile ${profile.id}`);
+      console.log(`[stripe/webhook] Creating subscription record from invoice.paid for profile ${profile.id}, interval=${interval}`);
 
       const { error: insertError } = await supabaseAdmin.from("subscriptions").insert({
         profile_id: profile.id,
@@ -388,14 +414,10 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
         tier,
         status,
         billing_interval: interval,
-        current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-        current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
-        trial_start: subscription.trial_start
-          ? new Date(subscription.trial_start * 1000).toISOString()
-          : null,
-        trial_end: subscription.trial_end
-          ? new Date(subscription.trial_end * 1000).toISOString()
-          : null,
+        current_period_start: invPeriod.start,
+        current_period_end: invPeriod.end,
+        trial_start: safeTimestamp(subscription.trial_start),
+        trial_end: safeTimestamp(subscription.trial_end),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
@@ -420,13 +442,14 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
     // Update existing subscription with current period info
     const subscription = await stripe.subscriptions.retrieve(subscriptionId);
     const status = subscription.status === "trialing" ? "trialing" : "active";
+    const existingPeriod = getSubPeriod(subscription);
 
     await supabaseAdmin
       .from("subscriptions")
       .update({
         status,
-        current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-        current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+        current_period_start: existingPeriod.start,
+        current_period_end: existingPeriod.end,
         updated_at: new Date().toISOString(),
       })
       .eq("stripe_customer_id", customerId);
@@ -461,7 +484,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
 async function handlePaymentFailed(invoice: Stripe.Invoice) {
   console.log("[stripe/webhook] Payment failed:", invoice.id);
 
-  if (!invoice.subscription) return;
+  if (!invoice.parent?.subscription_details?.subscription) return;
 
   const customerId = invoice.customer as string;
 

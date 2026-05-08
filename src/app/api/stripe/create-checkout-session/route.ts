@@ -2,6 +2,7 @@
 
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/app/lib/supabaseServer";
+import Stripe from "stripe";
 import { stripe, getPriceId } from "@/app/lib/stripe";
 import type { SubscriptionTier, BillingInterval } from "@/app/lib/types";
 
@@ -10,8 +11,6 @@ export const runtime = "nodejs";
 interface CreateCheckoutRequest {
   tier: Exclude<SubscriptionTier, "free">;
   interval: BillingInterval;
-  successUrl?: string;
-  cancelUrl?: string;
 }
 
 export async function POST(req: Request) {
@@ -29,7 +28,7 @@ export async function POST(req: Request) {
 
     // Parse request body
     const body = (await req.json()) as CreateCheckoutRequest;
-    const { tier, interval, successUrl, cancelUrl } = body;
+    const { tier, interval } = body;
 
     // Validate tier and interval
     if (!tier || !["pro", "elite"].includes(tier)) {
@@ -92,8 +91,11 @@ export async function POST(req: Request) {
     }
 
     // Build checkout session parameters
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-    const checkoutParams: Parameters<typeof stripe.checkout.sessions.create>[0] = {
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+    if (!appUrl) {
+      throw new Error("NEXT_PUBLIC_APP_URL must be set");
+    }
+    const checkoutParams: Stripe.Checkout.SessionCreateParams = {
       customer: customerId,
       mode: "subscription",
       payment_method_types: ["card"], // Only allow card payments (no Cash App, Klarna, etc.)
@@ -103,8 +105,8 @@ export async function POST(req: Request) {
           quantity: 1,
         },
       ],
-      success_url: successUrl || `${baseUrl}/billing?success=true`,
-      cancel_url: cancelUrl || `${baseUrl}/pricing?canceled=true`,
+      success_url: `${appUrl}/billing?success=true`,
+      cancel_url: `${appUrl}/pricing?canceled=true`,
       metadata: {
         user_id: user.id,
         profile_id: profile.id,

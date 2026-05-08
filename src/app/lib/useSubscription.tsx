@@ -114,7 +114,7 @@ export function SubscriptionProvider({ children }: SubscriptionProviderProps) {
       const usageKey = `${feature}_used` as keyof typeof usage;
 
       const limit = (limits[limitKey] as number) ?? 0;
-      const used = (usage?.[usageKey] as number) ?? 0;
+      const used = (usage?.[usageKey] as unknown as number) ?? 0;
 
       // Unlimited
       if (limit === -1) {

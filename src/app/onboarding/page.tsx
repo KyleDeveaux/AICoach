@@ -1011,15 +1011,10 @@ export default function OnboardingPage() {
   async function handleStartTrial(tier: Exclude<SubscriptionTier, "free">, interval: BillingInterval = "month") {
     setCheckoutLoading(tier);
     try {
-      // Build success/cancel URLs that route to dashboard after checkout
-      const baseUrl = window.location.origin;
-      const successUrl = `${baseUrl}/dashboard?welcome=true&subscribed=${tier}`;
-      const cancelUrl = `${baseUrl}/onboarding?canceled=true`;
-
       const res = await fetch("/api/stripe/create-checkout-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tier, interval, successUrl, cancelUrl }),
+        body: JSON.stringify({ tier, interval }),
       });
 
       if (!res.ok) {
