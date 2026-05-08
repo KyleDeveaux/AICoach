@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createSupabaseServerClient } from "@/app/lib/supabaseServer"; // <- your async helper
 import { checkUsageLimit, incrementUsage } from "@/app/lib/featureGating";
+import { supabaseAdmin } from "@/app/lib/supabaseAdmin";
 
 export const runtime = "nodejs";
 
@@ -258,7 +259,7 @@ Rules:
     }
 
     // ✅ Increment usage counter after successful analysis
-    await incrementUsage(profileId, "ai_photo_analyses", supabase);
+    await incrementUsage(profileId, "ai_photo_analyses", supabaseAdmin);
 
     return NextResponse.json({
       analysis,

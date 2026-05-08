@@ -243,7 +243,10 @@ export async function checkUsageLimit(
 }
 
 /**
- * Increment usage counter after successful feature use
+ * Increment usage counter after successful feature use.
+ *
+ * MUST be called with the admin client (service role). Usage tracking is a
+ * server-controlled billing concern and bypasses RLS by design.
  */
 export async function incrementUsage(
   profileId: string,
@@ -265,21 +268,35 @@ export async function incrementUsage(
   if (existing) {
     // Update existing record
     const currentValue = (existing[columnName] as number) ?? 0;
-    await supabase
+    const { error, count } = await supabase
       .from("usage_tracking")
       .update({
         [columnName]: currentValue + 1,
         updated_at: new Date().toISOString(),
       })
       .eq("id", existing.id);
+
+    if (error) {
+      console.error("incrementUsage UPDATE failed", { profileId, columnName, error });
+      throw new Error(`Failed to update usage tracking: ${error.message}`);
+    }
+    if (count === 0) {
+      console.error("incrementUsage UPDATE affected 0 rows", { profileId, columnName });
+      throw new Error("Usage tracking update affected 0 rows — possible RLS or missing record");
+    }
   } else {
     // Create new record
-    await supabase.from("usage_tracking").insert({
+    const { error } = await supabase.from("usage_tracking").insert({
       profile_id: profileId,
       period_start: periodStart,
       period_end: periodEnd,
       [columnName]: 1,
     });
+
+    if (error) {
+      console.error("incrementUsage INSERT failed", { profileId, columnName, error });
+      throw new Error(`Failed to insert usage tracking: ${error.message}`);
+    }
   }
 }
 
